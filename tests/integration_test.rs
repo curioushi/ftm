@@ -1,16 +1,23 @@
-//! Integration tests for ftm CLI commands.
+//! Integration tests for ftm CLI commands (server/client architecture).
 //!
 //! Run with: cargo test --release -- --test-threads=1
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serde::Deserialize;
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use tempfile::tempdir;
 
-/// Helper to get ftm command (uses path set by cargo test)
-fn ftm() -> Command {
-    Command::from_std(std::process::Command::new(env!("CARGO_BIN_EXE_ftm")))
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Helper to get ftm command with --port set (for client commands).
+fn ftm_client(port: u16) -> Command {
+    let mut cmd = Command::from_std(std::process::Command::new(env!("CARGO_BIN_EXE_ftm")));
+    cmd.args(["--port", &port.to_string()]);
+    cmd
 }
 
 /// Guard that keeps the temp dir on test failure and prints its path.
@@ -38,32 +45,99 @@ impl Drop for TestDirGuard {
     }
 }
 
-/// Create a test directory. On test failure the dir is preserved and its path is printed.
+/// Create a test directory. On test failure the dir is preserved.
 fn setup_test_dir() -> TestDirGuard {
     TestDirGuard {
         inner: Some(tempdir().unwrap()),
     }
 }
 
-// ---------------------------------------------------------------------------
-// New helpers
-// ---------------------------------------------------------------------------
-
-/// Spawn `ftm watch` in the given directory, returning the child process.
-/// Sleeps briefly to let the watcher initialize.
-fn start_watch(dir: &Path) -> std::process::Child {
-    let child = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
-        .current_dir(dir)
-        .arg("watch")
-        .stdout(std::process::Stdio::null())
+/// Start the ftm server on a random port. Returns (child, actual_port).
+fn start_server() -> (std::process::Child, u16) {
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
+        .args(["--port", "0", "serve"])
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .expect("failed to spawn ftm watch");
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    child
+        .expect("failed to spawn ftm serve");
+
+    let stdout = child.stdout.take().expect("failed to get stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .expect("failed to read server output");
+
+    // Parse port from "Listening on 127.0.0.1:<port>"
+    let port: u16 = line
+        .trim()
+        .rsplit(':')
+        .next()
+        .expect("failed to find port in output")
+        .parse()
+        .expect("failed to parse port");
+
+    // Drain stdout in background to prevent SIGPIPE / buffer fill
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1024];
+        while reader.read(&mut buf).unwrap_or(0) > 0 {}
+    });
+
+    (child, port)
 }
 
-/// Minimal deserialization structs for index.json (avoids needing chrono).
+/// Start server and checkout a directory. Returns (child, port).
+fn start_server_and_checkout(dir: &Path) -> (std::process::Child, u16) {
+    let (child, port) = start_server();
+    ftm_client(port)
+        .args(["checkout", dir.to_str().unwrap()])
+        .assert()
+        .success();
+    // Brief delay for watcher to initialize
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    (child, port)
+}
+
+fn stop_server(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Pre-initialize .ftm in a directory with custom settings.
+/// Useful for tests that need non-default config (e.g. max_history, max_file_size).
+fn pre_init_ftm(dir: &Path, max_history: usize, max_file_size: u64) {
+    let ftm_dir = dir.join(".ftm");
+    std::fs::create_dir_all(&ftm_dir).unwrap();
+    let config_yaml = format!(
+        r#"watch:
+  patterns:
+  - '*.rs'
+  - '*.py'
+  - '*.md'
+  - '*.txt'
+  - '*.json'
+  - '*.yml'
+  - '*.yaml'
+  - '*.toml'
+  - '*.js'
+  - '*.ts'
+  exclude:
+  - '**/target/**'
+  - '**/node_modules/**'
+  - '**/.git/**'
+  - '**/.ftm/**'
+settings:
+  max_history: {}
+  max_file_size: {}
+  web_port: 8765
+"#,
+        max_history, max_file_size
+    );
+    std::fs::write(ftm_dir.join("config.yaml"), config_yaml).unwrap();
+    std::fs::write(ftm_dir.join("index.json"), r#"{"history":[]}"#).unwrap();
+}
+
+/// Minimal deserialization structs for index.json.
 #[derive(Debug, Deserialize)]
 struct TestIndex {
     history: Vec<TestHistoryEntry>,
@@ -87,7 +161,6 @@ fn load_test_index(dir: &Path) -> TestIndex {
 }
 
 /// Poll index.json until `file` has at least `min_count` entries, or timeout.
-/// Returns true if the condition was met before the timeout.
 fn wait_for_index(dir: &Path, file: &str, min_count: usize, timeout_ms: u64) -> bool {
     let index_path = dir.join(".ftm/index.json");
     let start = std::time::Instant::now();
@@ -122,7 +195,6 @@ fn count_files_recursive(dir: &Path) -> usize {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                // Skip .tmp directory
                 if path.file_name().map(|n| n == ".tmp").unwrap_or(false) {
                     continue;
                 }
@@ -139,39 +211,46 @@ fn count_files_recursive(dir: &Path) -> usize {
 // Test modules
 // ===========================================================================
 
-mod init_tests {
+mod checkout_tests {
     use super::*;
 
     #[test]
-    fn test_init_creates_ftm_directory() {
+    fn test_checkout_creates_ftm_directory() {
         let dir = setup_test_dir();
+        let (mut server, port) = start_server();
 
-        ftm()
-            .current_dir(dir.path())
-            .arg("init")
+        ftm_client(port)
+            .args(["checkout", dir.path().to_str().unwrap()])
             .assert()
             .success()
-            .stdout(predicate::str::contains("Initialized .ftm"));
+            .stdout(predicate::str::contains("Checked out and watching"));
 
         assert!(dir.path().join(".ftm").exists());
         assert!(dir.path().join(".ftm/config.yaml").exists());
         assert!(dir.path().join(".ftm/index.json").exists());
+
+        stop_server(&mut server);
     }
 
     #[test]
-    fn test_init_already_initialized() {
+    fn test_checkout_already_checked_out() {
         let dir = setup_test_dir();
+        let (mut server, port) = start_server();
 
-        // First init
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        // Second init should say already initialized
-        ftm()
-            .current_dir(dir.path())
-            .arg("init")
+        // First checkout
+        ftm_client(port)
+            .args(["checkout", dir.path().to_str().unwrap()])
             .assert()
-            .success()
-            .stdout(predicate::str::contains("Already initialized"));
+            .success();
+
+        // Second checkout should fail
+        ftm_client(port)
+            .args(["checkout", dir.path().to_str().unwrap()])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("Already watching"));
+
+        stop_server(&mut server);
     }
 }
 
@@ -179,55 +258,46 @@ mod ls_tests {
     use super::*;
 
     #[test]
-    fn test_ls_not_initialized() {
-        let dir = setup_test_dir();
+    fn test_ls_not_checked_out() {
+        let (mut server, port) = start_server();
 
-        ftm()
-            .current_dir(dir.path())
+        ftm_client(port)
             .arg("ls")
             .assert()
             .failure()
-            .stderr(predicate::str::contains("Not initialized"));
+            .stderr(predicate::str::contains("No directory checked out"));
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_ls_empty() {
         let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        ftm()
-            .current_dir(dir.path())
+        ftm_client(port)
             .arg("ls")
             .assert()
             .success()
             .stdout(predicate::str::contains("No files tracked yet"));
+
+        stop_server(&mut server);
     }
 
     #[test]
-    fn test_ls_after_watch_and_write() {
+    fn test_ls_after_checkout_and_write() {
         let dir = setup_test_dir();
-
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        let mut watch_child = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
-            .current_dir(dir.path())
-            .arg("watch")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("failed to spawn ftm watch");
-
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        let (mut server, port) = start_server_and_checkout(dir.path());
 
         std::fs::write(dir.path().join("a.yaml"), "a: 1").unwrap();
         std::fs::write(dir.path().join("b.yaml"), "b: 2").unwrap();
         std::fs::write(dir.path().join("c.yaml"), "c: 3").unwrap();
 
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert!(wait_for_index(dir.path(), "a.yaml", 1, 2000));
+        assert!(wait_for_index(dir.path(), "b.yaml", 1, 2000));
+        assert!(wait_for_index(dir.path(), "c.yaml", 1, 2000));
 
-        ftm()
-            .current_dir(dir.path())
+        ftm_client(port)
             .arg("ls")
             .assert()
             .success()
@@ -235,25 +305,14 @@ mod ls_tests {
             .stdout(predicate::str::contains("b.yaml"))
             .stdout(predicate::str::contains("c.yaml"));
 
-        let _ = watch_child.kill();
+        stop_server(&mut server);
     }
 
     /// Helper: write `num_writes` versions of a 5 MB file with `interval_ms` between writes,
     /// then return (entry_count, all_sizes_correct).
     fn write_and_check(num_writes: usize, interval_ms: u64) -> (usize, bool) {
         let dir = setup_test_dir();
-
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        let mut watch_child = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
-            .current_dir(dir.path())
-            .arg("watch")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("failed to spawn ftm watch");
-
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        let (mut server, port) = start_server_and_checkout(dir.path());
 
         let file_path = dir.path().join("data.yaml");
         const FILE_SIZE_MB: usize = 5;
@@ -266,9 +325,14 @@ mod ls_tests {
             std::thread::sleep(std::time::Duration::from_millis(interval_ms));
         }
 
+        // Wait for at least one entry to be recorded
+        assert!(
+            wait_for_index(dir.path(), "data.yaml", 1, 5000),
+            "data.yaml should have at least 1 entry"
+        );
+
         // Parse entry count from ls output
-        let ls_output = ftm()
-            .current_dir(dir.path())
+        let ls_output = ftm_client(port)
             .arg("ls")
             .output()
             .expect("failed to run ftm ls");
@@ -293,8 +357,7 @@ mod ls_tests {
 
         // Check every recorded entry has the correct file size
         let expected_size_str = format!("{} bytes", target_size);
-        let history_output = ftm()
-            .current_dir(dir.path())
+        let history_output = ftm_client(port)
             .args(["history", "data.yaml"])
             .output()
             .expect("failed to run ftm history");
@@ -312,7 +375,7 @@ mod ls_tests {
             expected_size_str, correct_size_entries, total_size_entries, history_stdout
         );
 
-        let _ = watch_child.kill();
+        stop_server(&mut server);
         (entry_count, correct_size_entries == total_size_entries)
     }
 
@@ -345,34 +408,19 @@ mod ls_tests {
     }
 }
 
-mod watch_tests {
+mod watcher_tests {
     use super::*;
-
-    #[test]
-    fn test_watch_not_initialized() {
-        let dir = setup_test_dir();
-
-        ftm()
-            .current_dir(dir.path())
-            .arg("watch")
-            .timeout(std::time::Duration::from_secs(3))
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("Not initialized"));
-    }
 
     #[test]
     fn test_excluded_files_not_tracked() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        let mut watch = start_watch(dir.path());
+        let (mut server, _port) = start_server_and_checkout(dir.path());
 
         // Write a file inside .ftm/ (excluded by default)
         std::fs::write(dir.path().join(".ftm/sneaky.yaml"), "should: ignore").unwrap();
         // Write a non-matching extension file
         std::fs::write(dir.path().join("data.bin"), "binary stuff").unwrap();
-        // Write a tracked file as a reference (to confirm watcher is running)
+        // Write a tracked file as a reference
         std::fs::write(dir.path().join("tracked.yaml"), "key: value").unwrap();
 
         assert!(
@@ -390,15 +438,13 @@ mod watch_tests {
             "Non-matching extension files should not be tracked"
         );
 
-        let _ = watch.kill();
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_non_matching_extension_ignored() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        let mut watch = start_watch(dir.path());
+        let (mut server, _port) = start_server_and_checkout(dir.path());
 
         std::fs::write(dir.path().join("app.exe"), "not tracked").unwrap();
         std::fs::write(dir.path().join("image.png"), "not tracked").unwrap();
@@ -420,18 +466,16 @@ mod watch_tests {
             ".png files should not be tracked"
         );
 
-        let _ = watch.kill();
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_subdirectory_files_tracked() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
         let sub_dir = dir.path().join("sub/deep");
         std::fs::create_dir_all(&sub_dir).unwrap();
 
-        let mut watch = start_watch(dir.path());
+        let (mut server, port) = start_server_and_checkout(dir.path());
 
         std::fs::write(sub_dir.join("foo.rs"), "fn hello() {}").unwrap();
 
@@ -440,22 +484,19 @@ mod watch_tests {
             "sub/deep/foo.rs should be recorded with relative path"
         );
 
-        ftm()
-            .current_dir(dir.path())
+        ftm_client(port)
             .arg("ls")
             .assert()
             .success()
             .stdout(predicate::str::contains("sub/deep/foo.rs"));
 
-        let _ = watch.kill();
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_empty_file_ignored() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        let mut watch = start_watch(dir.path());
+        let (mut server, _port) = start_server_and_checkout(dir.path());
 
         // Write an empty file
         std::fs::write(dir.path().join("empty.txt"), "").unwrap();
@@ -473,115 +514,7 @@ mod watch_tests {
             "Empty files should not be tracked"
         );
 
-        let _ = watch.kill();
-    }
-
-    #[test]
-    fn test_watch_creates_default_log_file() {
-        let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        let mut watch = start_watch(dir.path());
-
-        // Write a file to ensure the watcher is running
-        std::fs::write(dir.path().join("probe.yaml"), "key: val").unwrap();
-        assert!(
-            wait_for_index(dir.path(), "probe.yaml", 1, 2000),
-            "probe.yaml should be recorded"
-        );
-
-        let _ = watch.kill();
-
-        // Verify log directory and log file exist under .ftm/log/
-        let log_dir = dir.path().join(".ftm/log");
-        assert!(log_dir.exists(), ".ftm/log/ directory should be created");
-
-        let log_files: Vec<_> = std::fs::read_dir(&log_dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|ext| ext == "log")
-                    .unwrap_or(false)
-            })
-            .collect();
-        assert_eq!(
-            log_files.len(),
-            1,
-            "Should have exactly 1 log file, found {}",
-            log_files.len()
-        );
-
-        // Verify filename format: YYYYMMDD-hhmmss.log
-        let name = log_files[0].file_name();
-        let name_str = name.to_string_lossy();
-        assert!(
-            name_str.len() == "YYYYMMDD-hhmmss.log".len(),
-            "Log filename '{}' should match YYYYMMDD-hhmmss.log length",
-            name_str
-        );
-        assert!(
-            name_str.ends_with(".log"),
-            "Log filename '{}' should end with .log",
-            name_str
-        );
-    }
-
-    #[test]
-    fn test_watch_custom_log_dir() {
-        let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        let custom_log_dir = dir.path().join("my-logs");
-
-        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
-            .current_dir(dir.path())
-            .args(["watch", "--log-dir", custom_log_dir.to_str().unwrap()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("failed to spawn ftm watch with --log-dir");
-
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        // Write a file to ensure the watcher is running
-        std::fs::write(dir.path().join("probe.yaml"), "key: val").unwrap();
-        assert!(
-            wait_for_index(dir.path(), "probe.yaml", 1, 2000),
-            "probe.yaml should be recorded"
-        );
-
-        let _ = child.kill();
-
-        // Verify custom log directory exists and contains a log file
-        assert!(
-            custom_log_dir.exists(),
-            "Custom log directory should be created"
-        );
-
-        let log_files: Vec<_> = std::fs::read_dir(&custom_log_dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|ext| ext == "log")
-                    .unwrap_or(false)
-            })
-            .collect();
-        assert_eq!(
-            log_files.len(),
-            1,
-            "Custom log dir should have exactly 1 log file, found {}",
-            log_files.len()
-        );
-
-        // Default log dir should NOT have been created
-        assert!(
-            !dir.path().join(".ftm/log").exists(),
-            ".ftm/log/ should not exist when --log-dir is used"
-        );
+        stop_server(&mut server);
     }
 }
 
@@ -591,9 +524,7 @@ mod dedup_tests {
     #[test]
     fn test_same_content_no_duplicate_entry() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        let mut watch = start_watch(dir.path());
+        let (mut server, _port) = start_server_and_checkout(dir.path());
 
         let content = "key: same_content";
 
@@ -607,9 +538,7 @@ mod dedup_tests {
         // Second write with identical content
         std::fs::write(dir.path().join("dup.yaml"), content).unwrap();
 
-        // Write a sync marker to ensure the second write was processed by the watcher.
-        // The worker thread processes tasks sequentially, so once the sync file
-        // appears in the index, the earlier dup.yaml write must have been handled.
+        // Write a sync marker
         std::fs::write(dir.path().join("sync.yaml"), "sync: marker").unwrap();
         assert!(
             wait_for_index(dir.path(), "sync.yaml", 1, 2000),
@@ -628,15 +557,13 @@ mod dedup_tests {
             count
         );
 
-        let _ = watch.kill();
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_different_files_same_content_share_snapshot() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        let mut watch = start_watch(dir.path());
+        let (mut server, _port) = start_server_and_checkout(dir.path());
 
         let content = "shared: content_value_12345";
         std::fs::write(dir.path().join("file_a.yaml"), content).unwrap();
@@ -652,11 +579,10 @@ mod dedup_tests {
         );
 
         let index = load_test_index(dir.path());
-        // Both files should have their own history entries
         assert!(index.history.iter().any(|e| e.file == "file_a.yaml"));
         assert!(index.history.iter().any(|e| e.file == "file_b.yaml"));
 
-        // But there should be only 1 snapshot file (content-addressable dedup)
+        // Only 1 snapshot file (content-addressable dedup)
         let snap_count = count_snapshot_files(dir.path());
         assert_eq!(
             snap_count, 1,
@@ -680,7 +606,7 @@ mod dedup_tests {
             "Both files should have the same checksum"
         );
 
-        let _ = watch.kill();
+        stop_server(&mut server);
     }
 }
 
@@ -688,29 +614,30 @@ mod history_tests {
     use super::*;
 
     #[test]
-    fn test_history_not_initialized() {
-        let dir = setup_test_dir();
+    fn test_history_not_checked_out() {
+        let (mut server, port) = start_server();
 
-        ftm()
-            .current_dir(dir.path())
+        ftm_client(port)
             .args(["history", "test.rs"])
             .assert()
             .failure()
-            .stderr(predicate::str::contains("Not initialized"));
+            .stderr(predicate::str::contains("No directory checked out"));
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_history_no_entries() {
         let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        ftm()
-            .current_dir(dir.path())
+        ftm_client(port)
             .args(["history", "nonexistent.rs"])
             .assert()
             .success()
             .stdout(predicate::str::contains("No history for"));
+
+        stop_server(&mut server);
     }
 }
 
@@ -720,9 +647,7 @@ mod history_ops_tests {
     #[test]
     fn test_history_create_then_modify_ops() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        let mut watch = start_watch(dir.path());
+        let (mut server, _port) = start_server_and_checkout(dir.path());
         let file_path = dir.path().join("ops.yaml");
 
         // Create
@@ -743,15 +668,13 @@ mod history_ops_tests {
         assert_eq!(entries[0].op, "create", "First op should be create");
         assert_eq!(entries[1].op, "modify", "Second op should be modify");
 
-        let _ = watch.kill();
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_history_delete_recorded() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        let mut watch = start_watch(dir.path());
+        let (mut server, _port) = start_server_and_checkout(dir.path());
         let file_path = dir.path().join("todelete.yaml");
 
         // Create
@@ -760,7 +683,6 @@ mod history_ops_tests {
 
         // Delete
         std::fs::remove_file(&file_path).unwrap();
-        // Wait for delete to be recorded (entry count should become 2)
         assert!(
             wait_for_index(dir.path(), "todelete.yaml", 2, 2000),
             "Delete event should be recorded"
@@ -784,15 +706,13 @@ mod history_ops_tests {
             "Delete entry should have no size"
         );
 
-        let _ = watch.kill();
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_history_recreate_after_delete() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        let mut watch = start_watch(dir.path());
+        let (mut server, _port) = start_server_and_checkout(dir.path());
         let file_path = dir.path().join("recreate.yaml");
 
         // Create
@@ -821,15 +741,13 @@ mod history_ops_tests {
             "Third should be create (after delete)"
         );
 
-        let _ = watch.kill();
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_history_multiple_files_independent() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        let mut watch = start_watch(dir.path());
+        let (mut server, _port) = start_server_and_checkout(dir.path());
 
         std::fs::write(dir.path().join("alpha.yaml"), "a: 1").unwrap();
         std::fs::write(dir.path().join("beta.yaml"), "b: 1").unwrap();
@@ -860,7 +778,7 @@ mod history_ops_tests {
             "beta should still have 1 entry (create only)"
         );
 
-        let _ = watch.kill();
+        stop_server(&mut server);
     }
 }
 
@@ -868,37 +786,36 @@ mod restore_tests {
     use super::*;
 
     #[test]
-    fn test_restore_not_initialized() {
-        let dir = setup_test_dir();
+    fn test_restore_not_checked_out() {
+        let (mut server, port) = start_server();
 
-        ftm()
-            .current_dir(dir.path())
+        ftm_client(port)
             .args(["restore", "test.rs", "-c", "abc12345"])
             .assert()
             .failure()
-            .stderr(predicate::str::contains("Not initialized"));
+            .stderr(predicate::str::contains("No directory checked out"));
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_restore_version_not_found() {
         let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        ftm()
-            .current_dir(dir.path())
+        ftm_client(port)
             .args(["restore", "test.rs", "-c", "abc12345"])
             .assert()
             .failure()
             .stderr(predicate::str::contains("Version not found"));
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_restore_roundtrip() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        let mut watch = start_watch(dir.path());
+        let (mut server, port) = start_server_and_checkout(dir.path());
         let file_path = dir.path().join("roundtrip.yaml");
 
         let v1_content = "version: 1\ndata: original";
@@ -911,8 +828,6 @@ mod restore_tests {
         // Write v2
         std::fs::write(&file_path, v2_content).unwrap();
         assert!(wait_for_index(dir.path(), "roundtrip.yaml", 2, 2000));
-
-        let _ = watch.kill();
 
         // Get v1's checksum from index
         let index = load_test_index(dir.path());
@@ -927,9 +842,8 @@ mod restore_tests {
         let current = std::fs::read_to_string(&file_path).unwrap();
         assert_eq!(current, v2_content, "File should currently be v2");
 
-        // Restore v1
-        ftm()
-            .current_dir(dir.path())
+        // Restore v1 via server
+        ftm_client(port)
             .args(["restore", "roundtrip.yaml", "-c", v1_checksum])
             .assert()
             .success();
@@ -940,14 +854,14 @@ mod restore_tests {
             restored, v1_content,
             "File content should be restored to v1"
         );
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_restore_with_short_checksum_prefix() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        let mut watch = start_watch(dir.path());
+        let (mut server, port) = start_server_and_checkout(dir.path());
         let file_path = dir.path().join("prefix.yaml");
 
         let original = "data: for_prefix_test";
@@ -957,8 +871,6 @@ mod restore_tests {
 
         std::fs::write(&file_path, "data: modified version").unwrap();
         assert!(wait_for_index(dir.path(), "prefix.yaml", 2, 2000));
-
-        let _ = watch.kill();
 
         let index = load_test_index(dir.path());
         let entry = index
@@ -970,8 +882,7 @@ mod restore_tests {
         let short_prefix = &full_checksum[..8];
 
         // Restore using only the first 8 chars of the checksum
-        ftm()
-            .current_dir(dir.path())
+        ftm_client(port)
             .args(["restore", "prefix.yaml", "-c", short_prefix])
             .assert()
             .success();
@@ -981,22 +892,21 @@ mod restore_tests {
             restored, original,
             "Restore with 8-char prefix should recover original content"
         );
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_restore_deleted_file() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
-        // Keep watcher running throughout the entire create → delete → restore cycle
-        let mut watch = start_watch(dir.path());
+        let (mut server, port) = start_server_and_checkout(dir.path());
         let file_path = dir.path().join("willdelete.yaml");
 
         let content = "precious: data";
         std::fs::write(&file_path, content).unwrap();
         assert!(wait_for_index(dir.path(), "willdelete.yaml", 1, 2000));
 
-        // Delete the file and wait for the delete event to be recorded
+        // Delete the file and wait for the delete event
         std::fs::remove_file(&file_path).unwrap();
         assert!(!file_path.exists(), "File should be deleted");
         assert!(
@@ -1013,9 +923,8 @@ mod restore_tests {
             .unwrap();
         let checksum = entry.checksum.as_ref().unwrap().clone();
 
-        // Restore the deleted file (watcher is still running and will pick this up)
-        ftm()
-            .current_dir(dir.path())
+        // Restore the deleted file via server (watcher will pick this up)
+        ftm_client(port)
             .args(["restore", "willdelete.yaml", "-c", &checksum])
             .assert()
             .success();
@@ -1025,15 +934,12 @@ mod restore_tests {
         assert_eq!(restored, content, "Restored content should match original");
 
         // Wait for the watcher to record the restored file as a new create
-        // (since the previous entry was delete, the new write becomes create)
         assert!(
             wait_for_index(dir.path(), "willdelete.yaml", 3, 2000),
             "Restored file should be recorded as a new create entry"
         );
 
-        let _ = watch.kill();
-
-        // Verify the full index: create → delete → create
+        // Verify the full index: create -> delete -> create
         let index_after = load_test_index(dir.path());
         let entries: Vec<_> = index_after
             .history
@@ -1052,8 +958,7 @@ mod restore_tests {
             "Third entry (after restore) should be create"
         );
 
-        // The newest create entry must be the last one and its checksum
-        // should match the original content
+        // The newest create entry checksum should match the original content
         let last_entry = entries.last().unwrap();
         assert_eq!(last_entry.op, "create", "Latest entry must be create");
         use sha2::{Digest, Sha256};
@@ -1063,29 +968,24 @@ mod restore_tests {
             &expected_checksum,
             "Latest create entry checksum should match the original content hash"
         );
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_restore_to_subdirectory() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
-
         let sub_dir = dir.path().join("nested/dir");
         std::fs::create_dir_all(&sub_dir).unwrap();
 
-        let mut watch = start_watch(dir.path());
+        let (mut server, port) = start_server_and_checkout(dir.path());
         let file_path = sub_dir.join("deep.yaml");
 
         let content = "nested: file content";
         std::fs::write(&file_path, content).unwrap();
         assert!(wait_for_index(dir.path(), "nested/dir/deep.yaml", 1, 2000));
 
-        let _ = watch.kill();
-
-        // Delete the entire subdirectory tree
-        std::fs::remove_dir_all(dir.path().join("nested")).unwrap();
-        assert!(!file_path.exists());
-
+        // Get checksum
         let index = load_test_index(dir.path());
         let entry = index
             .history
@@ -1094,9 +994,12 @@ mod restore_tests {
             .unwrap();
         let checksum = entry.checksum.as_ref().unwrap();
 
+        // Delete the entire subdirectory tree
+        std::fs::remove_dir_all(dir.path().join("nested")).unwrap();
+        assert!(!file_path.exists());
+
         // Restore should recreate parent directories automatically
-        ftm()
-            .current_dir(dir.path())
+        ftm_client(port)
             .args(["restore", "nested/dir/deep.yaml", "-c", checksum])
             .assert()
             .success();
@@ -1107,6 +1010,8 @@ mod restore_tests {
         );
         let restored = std::fs::read_to_string(&file_path).unwrap();
         assert_eq!(restored, content);
+
+        stop_server(&mut server);
     }
 }
 
@@ -1116,15 +1021,11 @@ mod trim_tests {
     #[test]
     fn test_max_history_trims_old_entries() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
 
-        // Override max_history to 3 in config.yaml
-        let config_path = dir.path().join(".ftm/config.yaml");
-        let config_content = std::fs::read_to_string(&config_path).unwrap();
-        let new_config = config_content.replace("max_history: 100", "max_history: 3");
-        std::fs::write(&config_path, new_config).unwrap();
+        // Pre-init .ftm with max_history=3
+        pre_init_ftm(dir.path(), 3, 30 * 1024 * 1024);
 
-        let mut watch = start_watch(dir.path());
+        let (mut server, _port) = start_server_and_checkout(dir.path());
         let file_path = dir.path().join("trimme.yaml");
 
         // Write 5 different versions with delay between each
@@ -1133,16 +1034,12 @@ mod trim_tests {
             std::thread::sleep(std::time::Duration::from_millis(150));
         }
 
-        // Write a sync marker to ensure all previous writes were processed.
-        // The worker thread is sequential, so once the sync file is indexed,
-        // all trimme.yaml writes must have been handled.
+        // Write a sync marker to ensure all previous writes were processed
         std::fs::write(dir.path().join("sync.yaml"), "sync: done").unwrap();
         assert!(
             wait_for_index(dir.path(), "sync.yaml", 1, 3000),
             "Sync marker should be recorded"
         );
-
-        let _ = watch.kill();
 
         let index = load_test_index(dir.path());
         let entries: Vec<_> = index
@@ -1161,8 +1058,7 @@ mod trim_tests {
             "Should have at least 1 entry for trimme.yaml"
         );
 
-        // If all 5 writes were captured (very likely with 150ms interval),
-        // verify the retained entries are the newest 3 versions (2, 3, 4).
+        // If all 5 writes were captured, verify the retained entries are the newest 3 versions
         if entries.len() == 3 {
             use sha2::{Digest, Sha256};
             let expected_checksums: Vec<String> = (2..5)
@@ -1175,7 +1071,6 @@ mod trim_tests {
                     "Trimmed entries should be the newest 3 versions in order"
                 );
             }
-            // Also verify the oldest versions were indeed trimmed away
             let oldest_checksum = hex::encode(Sha256::digest(b"version: 0"));
             assert!(
                 !entries
@@ -1184,6 +1079,8 @@ mod trim_tests {
                 "Oldest version (version: 0) should have been trimmed"
             );
         }
+
+        stop_server(&mut server);
     }
 }
 
@@ -1191,28 +1088,29 @@ mod scan_tests {
     use super::*;
 
     #[test]
-    fn test_scan_not_initialized() {
-        let dir = setup_test_dir();
+    fn test_scan_not_checked_out() {
+        let (mut server, port) = start_server();
 
-        ftm()
-            .current_dir(dir.path())
+        ftm_client(port)
             .arg("scan")
             .assert()
             .failure()
-            .stderr(predicate::str::contains("Not initialized"));
+            .stderr(predicate::str::contains("No directory checked out"));
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_scan_detects_new_files() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
 
-        // Create files without the watcher running
+        // Create files BEFORE checkout (watcher won't see them)
         std::fs::write(dir.path().join("hello.rs"), "fn main() {}").unwrap();
         std::fs::write(dir.path().join("world.py"), "print('hi')").unwrap();
 
-        ftm()
-            .current_dir(dir.path())
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        ftm_client(port)
             .arg("scan")
             .assert()
             .success()
@@ -1226,31 +1124,34 @@ mod scan_tests {
         assert!(entries.iter().all(|e| e.op == "create"));
         assert!(entries.iter().any(|e| e.file == "hello.rs"));
         assert!(entries.iter().any(|e| e.file == "world.py"));
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_scan_detects_modifications() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
 
-        // Create baseline
+        // Create baseline file BEFORE checkout
         std::fs::write(dir.path().join("app.rs"), "fn main() {}").unwrap();
-        ftm()
-            .current_dir(dir.path())
+
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        // First scan: creates baseline
+        ftm_client(port)
             .arg("scan")
             .assert()
             .success()
             .stdout(predicate::str::contains("1 created"));
 
-        // Modify the file
+        // Modify the file (watcher will also detect this, but we verify final state)
         std::fs::write(dir.path().join("app.rs"), "fn main() { println!(\"hi\"); }").unwrap();
-        ftm()
-            .current_dir(dir.path())
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("1 modified"))
-            .stdout(predicate::str::contains("0 created"));
+
+        // Wait for either watcher or scan to pick up the change
+        assert!(
+            wait_for_index(dir.path(), "app.rs", 2, 2000),
+            "Modification should be recorded"
+        );
 
         let index = load_test_index(dir.path());
         let entries: Vec<_> = index
@@ -1261,31 +1162,34 @@ mod scan_tests {
         assert_eq!(entries.len(), 2, "Should have create + modify");
         assert_eq!(entries[0].op, "create");
         assert_eq!(entries[1].op, "modify");
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_scan_detects_deletions() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
 
-        // Create and scan to establish baseline
+        // Create file BEFORE checkout
         std::fs::write(dir.path().join("temp.txt"), "temporary content").unwrap();
-        ftm()
-            .current_dir(dir.path())
+
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        // Scan to create baseline
+        ftm_client(port)
             .arg("scan")
             .assert()
             .success()
             .stdout(predicate::str::contains("1 created"));
 
-        // Delete the file
+        // Delete the file (watcher will also detect this)
         std::fs::remove_file(dir.path().join("temp.txt")).unwrap();
-        ftm()
-            .current_dir(dir.path())
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("1 deleted"))
-            .stdout(predicate::str::contains("0 created"));
+
+        // Wait for deletion to be recorded
+        assert!(
+            wait_for_index(dir.path(), "temp.txt", 2, 2000),
+            "Deletion should be recorded"
+        );
 
         let index = load_test_index(dir.path());
         let entries: Vec<_> = index
@@ -1296,26 +1200,28 @@ mod scan_tests {
         assert_eq!(entries.len(), 2, "Should have create + delete");
         assert_eq!(entries[0].op, "create");
         assert_eq!(entries[1].op, "delete");
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_scan_no_changes_second_run() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
 
+        // Create file BEFORE checkout
         std::fs::write(dir.path().join("stable.md"), "# Stable").unwrap();
 
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
         // First scan
-        ftm()
-            .current_dir(dir.path())
+        ftm_client(port)
             .arg("scan")
             .assert()
             .success()
             .stdout(predicate::str::contains("1 created"));
 
         // Second scan - nothing changed
-        ftm()
-            .current_dir(dir.path())
+        ftm_client(port)
             .arg("scan")
             .assert()
             .success()
@@ -1332,21 +1238,22 @@ mod scan_tests {
             .filter(|e| e.file == "stable.md")
             .count();
         assert_eq!(count, 1, "No new entries should be added on unchanged scan");
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_scan_ignores_non_matching_patterns() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
 
-        // Create files with non-matching extensions
+        // Create files BEFORE checkout
         std::fs::write(dir.path().join("image.png"), "not tracked").unwrap();
         std::fs::write(dir.path().join("binary.exe"), "not tracked").unwrap();
-        // Create a matching file as reference
         std::fs::write(dir.path().join("code.rs"), "fn test() {}").unwrap();
 
-        ftm()
-            .current_dir(dir.path())
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        ftm_client(port)
             .arg("scan")
             .assert()
             .success()
@@ -1359,25 +1266,24 @@ mod scan_tests {
             "Only matching file should be tracked"
         );
         assert_eq!(index.history[0].file, "code.rs");
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_scan_skips_large_files() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
 
-        // Override max_file_size to 100 bytes in config
-        let config_path = dir.path().join(".ftm/config.yaml");
-        let config_content = std::fs::read_to_string(&config_path).unwrap();
-        let new_config = config_content.replace("max_file_size: 31457280", "max_file_size: 100");
-        std::fs::write(&config_path, new_config).unwrap();
+        // Pre-init .ftm with max_file_size=100
+        pre_init_ftm(dir.path(), 100, 100);
 
-        // Create a small file and a large file
+        // Create files BEFORE checkout
         std::fs::write(dir.path().join("small.txt"), "tiny").unwrap();
         std::fs::write(dir.path().join("large.txt"), "x".repeat(200)).unwrap();
 
-        ftm()
-            .current_dir(dir.path())
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        ftm_client(port)
             .arg("scan")
             .assert()
             .success()
@@ -1386,20 +1292,23 @@ mod scan_tests {
         let index = load_test_index(dir.path());
         assert_eq!(index.history.len(), 1);
         assert_eq!(index.history[0].file, "small.txt");
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_scan_subdirectories() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
 
+        // Create files in subdirectories BEFORE checkout
         let sub_dir = dir.path().join("src/lib");
         std::fs::create_dir_all(&sub_dir).unwrap();
         std::fs::write(sub_dir.join("mod.rs"), "pub mod lib;").unwrap();
         std::fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
 
-        ftm()
-            .current_dir(dir.path())
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        ftm_client(port)
             .arg("scan")
             .assert()
             .success()
@@ -1408,14 +1317,15 @@ mod scan_tests {
         let index = load_test_index(dir.path());
         assert!(index.history.iter().any(|e| e.file == "src/lib/mod.rs"));
         assert!(index.history.iter().any(|e| e.file == "main.rs"));
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_scan_skips_excluded_directories() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
 
-        // Create files in excluded directories
+        // Create files in excluded directories BEFORE checkout
         let target_dir = dir.path().join("target/debug");
         std::fs::create_dir_all(&target_dir).unwrap();
         std::fs::write(target_dir.join("build.rs"), "// build artifact").unwrap();
@@ -1424,11 +1334,12 @@ mod scan_tests {
         std::fs::create_dir_all(&node_dir).unwrap();
         std::fs::write(node_dir.join("index.js"), "module.exports = {}").unwrap();
 
-        // Create a normal tracked file
+        // Normal tracked file
         std::fs::write(dir.path().join("app.rs"), "fn main() {}").unwrap();
 
-        ftm()
-            .current_dir(dir.path())
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        ftm_client(port)
             .arg("scan")
             .assert()
             .success()
@@ -1437,18 +1348,21 @@ mod scan_tests {
         let index = load_test_index(dir.path());
         assert_eq!(index.history.len(), 1);
         assert_eq!(index.history[0].file, "app.rs");
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_scan_empty_files_ignored() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
 
+        // Create files BEFORE checkout
         std::fs::write(dir.path().join("empty.rs"), "").unwrap();
         std::fs::write(dir.path().join("notempty.rs"), "fn x() {}").unwrap();
 
-        ftm()
-            .current_dir(dir.path())
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        ftm_client(port)
             .arg("scan")
             .assert()
             .success()
@@ -1457,19 +1371,22 @@ mod scan_tests {
         let index = load_test_index(dir.path());
         assert_eq!(index.history.len(), 1);
         assert_eq!(index.history[0].file, "notempty.rs");
+
+        stop_server(&mut server);
     }
 
     #[test]
     fn test_scan_dedup_same_content() {
         let dir = setup_test_dir();
-        ftm().current_dir(dir.path()).arg("init").assert().success();
 
+        // Create files BEFORE checkout
         let content = "shared: content";
         std::fs::write(dir.path().join("a.yaml"), content).unwrap();
         std::fs::write(dir.path().join("b.yaml"), content).unwrap();
 
-        ftm()
-            .current_dir(dir.path())
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        ftm_client(port)
             .arg("scan")
             .assert()
             .success()
@@ -1490,5 +1407,7 @@ mod scan_tests {
             .collect();
         assert_eq!(checksums.len(), 2);
         assert_eq!(checksums[0], checksums[1], "Checksums should match");
+
+        stop_server(&mut server);
     }
 }

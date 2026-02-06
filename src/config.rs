@@ -13,6 +13,12 @@ pub struct WatchConfig {
 pub struct Settings {
     pub max_history: usize,
     pub max_file_size: u64,
+    #[serde(default = "default_web_port")]
+    pub web_port: u16,
+}
+
+fn default_web_port() -> u16 {
+    8765
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +53,7 @@ impl Default for Config {
             settings: Settings {
                 max_history: 100,
                 max_file_size: 30 * 1024 * 1024, // 30MB
+                web_port: 8765,
             },
         }
     }

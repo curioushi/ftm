@@ -54,6 +54,12 @@ impl FileWatcher {
         }
     }
 
+    /// Start watching in a background thread (non-blocking).
+    /// Returns the JoinHandle for the watcher thread.
+    pub fn watch_background(self) -> std::thread::JoinHandle<Result<()>> {
+        thread::spawn(move || self.watch())
+    }
+
     pub fn watch(&self) -> Result<()> {
         let (tx, rx) = mpsc::channel();
         let (task_tx, task_rx) = mpsc::channel();

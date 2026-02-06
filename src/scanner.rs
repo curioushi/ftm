@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
+#[derive(serde::Serialize)]
 pub struct ScanResult {
     pub created: usize,
     pub modified: usize,

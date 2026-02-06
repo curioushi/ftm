@@ -1,38 +1,38 @@
+mod client;
 mod config;
 mod scanner;
+mod server;
 mod storage;
 mod types;
 mod watcher;
 
-use anyhow::{Context, Result};
-use chrono::Local;
+use anyhow::Result;
 use clap::{Parser, Subcommand};
-use config::Config;
-use scanner::Scanner;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use storage::Storage;
-use tracing::info;
-use watcher::FileWatcher;
-
-const FTM_DIR: &str = ".ftm";
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "ftm", about = "File Time Machine - Text file version tracking")]
 struct Cli {
+    /// Server port (used by serve and all client commands)
+    #[arg(long, default_value_t = 8765, global = true)]
+    port: u16,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize .ftm in current directory
-    Init,
-    /// Start watching for file changes
-    Watch {
+    /// Start the FTM server (daemon mode)
+    Serve {
         /// Custom log directory (default: .ftm/log/)
         #[arg(long)]
         log_dir: Option<PathBuf>,
+    },
+    /// Initialize .ftm in a directory and start watching
+    Checkout {
+        /// Directory to watch (must be absolute path)
+        directory: PathBuf,
     },
     /// List tracked files
     Ls,
@@ -49,174 +49,55 @@ enum Commands {
     Scan,
 }
 
-fn get_ftm_dir() -> Result<PathBuf> {
-    let cwd = std::env::current_dir()?;
-    Ok(cwd.join(FTM_DIR))
-}
+fn main() -> Result<()> {
+    let cli = Cli::parse();
 
-fn ensure_initialized() -> Result<PathBuf> {
-    let ftm_dir = get_ftm_dir()?;
-    if !ftm_dir.exists() {
-        anyhow::bail!("Not initialized. Run 'ftm init' first.");
+    match cli.command {
+        Commands::Serve { log_dir } => {
+            // Initialize logging
+            if let Some(log_dir) = log_dir {
+                init_file_logging(&log_dir)?;
+            } else {
+                tracing_subscriber::fmt::init();
+            }
+
+            // Start async server
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(server::serve(cli.port))
+        }
+        Commands::Checkout { directory } => {
+            // Resolve to absolute path
+            let abs_dir = if directory.is_absolute() {
+                directory
+            } else {
+                std::env::current_dir()?.join(directory)
+            };
+            let abs_dir = abs_dir.canonicalize().unwrap_or_else(|_| abs_dir.clone());
+            client::client_checkout(cli.port, &abs_dir.to_string_lossy())
+        }
+        Commands::Ls => client::client_ls(cli.port),
+        Commands::History { file } => client::client_history(cli.port, &file),
+        Commands::Restore { file, checksum } => client::client_restore(cli.port, &file, &checksum),
+        Commands::Scan => client::client_scan(cli.port),
     }
-    Ok(ftm_dir)
 }
 
-/// Initialize file-based logging for the watcher.
-/// Returns the path to the created log file.
-fn init_file_logging(ftm_dir: &Path, log_dir: Option<&Path>) -> Result<PathBuf> {
-    let log_path = match log_dir {
-        Some(dir) => dir.to_path_buf(),
-        None => ftm_dir.join("log"),
-    };
+/// Initialize file-based logging to a directory.
+fn init_file_logging(log_dir: &std::path::Path) -> Result<()> {
+    use chrono::Local;
+    use std::sync::Mutex;
 
-    std::fs::create_dir_all(&log_path)
-        .with_context(|| format!("Failed to create log directory: {}", log_path.display()))?;
-
+    std::fs::create_dir_all(log_dir)?;
     let now = Local::now();
     let log_filename = now.format("%Y%m%d-%H%M%S.log").to_string();
-    let log_file_path = log_path.join(&log_filename);
-
-    let log_file = std::fs::File::create(&log_file_path)
-        .with_context(|| format!("Failed to create log file: {}", log_file_path.display()))?;
+    let log_file_path = log_dir.join(&log_filename);
+    let log_file = std::fs::File::create(&log_file_path)?;
 
     tracing_subscriber::fmt()
         .with_writer(Mutex::new(log_file))
         .with_ansi(false)
         .init();
 
-    Ok(log_file_path)
-}
-
-fn cmd_init() -> Result<()> {
-    let ftm_dir = get_ftm_dir()?;
-    if ftm_dir.exists() {
-        println!("Already initialized.");
-        return Ok(());
-    }
-
-    std::fs::create_dir_all(&ftm_dir)?;
-    let config = Config::default();
-    config.save(&ftm_dir.join("config.yaml"))?;
-
-    // Create empty index with history array
-    let index = types::Index::default();
-    let index_content = serde_json::to_string_pretty(&index)?;
-    std::fs::write(ftm_dir.join("index.json"), index_content)?;
-
-    println!("Initialized .ftm in current directory.");
+    eprintln!("Log file: {}", log_file_path.display());
     Ok(())
-}
-
-fn cmd_watch(log_dir: Option<&Path>) -> Result<()> {
-    let ftm_dir = ensure_initialized()?;
-    let root_dir = std::env::current_dir()?;
-
-    let log_file_path = init_file_logging(&ftm_dir, log_dir)?;
-    println!("Log file: {}", log_file_path.display());
-
-    let config = Config::load(&ftm_dir.join("config.yaml")).context("Failed to load config")?;
-    let storage = Storage::new(ftm_dir, config.settings.max_history);
-    let watcher = FileWatcher::new(root_dir, config, storage);
-
-    info!("Starting file watcher...");
-    println!("Watching for changes. Press Ctrl+C to stop.");
-    watcher.watch()
-}
-
-fn cmd_ls() -> Result<()> {
-    let ftm_dir = ensure_initialized()?;
-    let config = Config::load(&ftm_dir.join("config.yaml"))?;
-    let storage = Storage::new(ftm_dir, config.settings.max_history);
-    let files = storage.list_files()?;
-
-    if files.is_empty() {
-        println!("No files tracked yet.");
-    } else {
-        println!("Tracked files:");
-        for (path, count) in &files {
-            println!("  {} ({} entries)", path, count);
-        }
-    }
-    Ok(())
-}
-
-fn cmd_history(file: &str) -> Result<()> {
-    let ftm_dir = ensure_initialized()?;
-    let config = Config::load(&ftm_dir.join("config.yaml"))?;
-    let storage = Storage::new(ftm_dir, config.settings.max_history);
-    let entries = storage.list_history(file)?;
-
-    if entries.is_empty() {
-        println!("No history for '{}'", file);
-    } else {
-        println!("History for '{}':", file);
-        for entry in entries.iter().rev() {
-            let local_time = entry.timestamp.with_timezone(&Local);
-            let checksum_short = entry.checksum.as_ref().map(|c| &c[..8]).unwrap_or("-");
-            let size_str = entry
-                .size
-                .map(|s| format!("{} bytes", s))
-                .unwrap_or_else(|| "-".to_string());
-            println!(
-                "  {} | {} | {} | {}",
-                local_time.format("%Y-%m-%d %H:%M:%S"),
-                entry.op,
-                checksum_short,
-                size_str
-            );
-        }
-    }
-    Ok(())
-}
-
-fn cmd_scan() -> Result<()> {
-    let ftm_dir = ensure_initialized()?;
-    let root_dir = std::env::current_dir()?;
-    let config = Config::load(&ftm_dir.join("config.yaml")).context("Failed to load config")?;
-    let storage = Storage::new(ftm_dir, config.settings.max_history);
-    let scanner = Scanner::new(root_dir, config, storage);
-
-    println!("Scanning for changes...");
-    let result = scanner.scan()?;
-
-    println!(
-        "Scan complete: {} created, {} modified, {} deleted, {} unchanged",
-        result.created, result.modified, result.deleted, result.unchanged
-    );
-    Ok(())
-}
-
-fn cmd_restore(file: &str, checksum: &str) -> Result<()> {
-    let ftm_dir = ensure_initialized()?;
-    let root_dir = std::env::current_dir()?;
-    let config = Config::load(&ftm_dir.join("config.yaml"))?;
-    let storage = Storage::new(ftm_dir, config.settings.max_history);
-
-    storage.restore(file, checksum, &root_dir)?;
-    println!(
-        "Restored '{}' to checksum '{}'",
-        file,
-        &checksum[..8.min(checksum.len())]
-    );
-    Ok(())
-}
-
-fn main() -> Result<()> {
-    let cli = Cli::parse();
-
-    // Watch command sets up file-based logging inside cmd_watch;
-    // all other commands use default stdout logging.
-    if !matches!(&cli.command, Commands::Watch { .. }) {
-        tracing_subscriber::fmt::init();
-    }
-
-    match cli.command {
-        Commands::Init => cmd_init(),
-        Commands::Watch { log_dir } => cmd_watch(log_dir.as_deref()),
-        Commands::Ls => cmd_ls(),
-        Commands::History { file } => cmd_history(&file),
-        Commands::Restore { file, checksum } => cmd_restore(&file, &checksum),
-        Commands::Scan => cmd_scan(),
-    }
 }
