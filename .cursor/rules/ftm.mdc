@@ -1,0 +1,129 @@
+---
+description: FTM (File Time Machine) project context, CLI, data structures, testing
+alwaysApply: true
+---
+
+# FTM (File Time Machine)
+
+Cross-platform text file version tracking tool. Monitors file changes, creates snapshots, provides Web UI for history/diff viewing.
+
+## Core Features
+
+- **Daemon Mode**: Background file monitoring using `notify` crate
+- **Periodic Scanning**: Detect changes missed when daemon was stopped
+- **Web Control Center**: Configure ftm + browse file history with diff viewer
+- **Snapshot Storage**: Store file copies in `.ftm/` directory
+
+## CLI Commands
+
+```
+# Server
+ftm-cli serve --web        # Start daemon, optinally with web UI
+                           # Can only watch one directory at a time
+
+# Client
+ftm-cli version            # Print Server and Client version
+ftm-cli checkout <directory> # Request server to init .ftm in <directory> and begin to watch
+ftm-cli lsdir              # List all watched .ftm, highlight current watch dir
+ftm-cli ls                 # List all files in current watch dir
+ftm-cli history <file>     # List history of file in current watch dir
+ftm-cli restore <file> --version <id>
+ftm-cli scan               # Manual full scan
+ftm-cli config set xxx
+ftm-cli config get xxx
+ftm-cli logs               # Show logs in .ftm
+
+```
+
+## Data Structures
+
+### FileEvent (Core Unit)
+
+```rust
+enum EventSource { Notify, Scan }
+enum EventKind { Create, Modify, Delete, Rename { from: PathBuf, to: PathBuf } }
+
+struct FileEvent {
+    id: Uuid,
+    source: EventSource,
+    kind: EventKind,
+    path: PathBuf,
+    timestamp: DateTime<Utc>,
+    checksum: Option<String>,
+}
+```
+
+### Storage Structure
+
+```
+project/
+└── .ftm/
+    ├── config.yaml          # Watch patterns, max_history, scan_interval
+    ├── index.json           # File index and metadata
+    └── snapshots/<hash>/
+        ├── meta.json
+        └── versions/
+            └── <timestamp>_<shorthash>.<ext>
+```
+
+### Config Example (`.ftm/config.yaml`)
+
+```yaml
+watch:
+  patterns: ["*.rs", "*.py", "*.md"]
+  exclude: ["**/target/**", "**/node_modules/**"]
+settings:
+  max_history: 100
+  scan_interval: 300
+  max_file_size: 10485760
+  web_port: 8765
+```
+
+## Web UI Layout
+
+```
+┌─────────────────────────────────────────────────────┐
+│ [filter]                                            │
+├──────────────┬──────────────────────────────────────┤
+│ File List    │         Diff Viewer                  │
+│ (navigation) │                                      │
+├──────────────┴──────────────────────────────────────┤
+│ [-1d] ──|──|──|──|────────────────────── [Current]  │
+│        Timeline (color-coded event markers)         │
+└─────────────────────────────────────────────────────┘
+Event colors: Create=green, Modify=blue, Delete=red, Rename=purple
+```
+
+## Testing
+
+Run tests (release build with debuginfo, single-threaded):
+
+```bash
+cargo test --release -- --test-threads=1
+```
+
+## Tech Stack
+
+| Component | Choice |
+|-----------|--------|
+| File Watching | `notify` |
+| Async | `tokio` |
+| CLI | `clap` |
+| Web | `axum` + embedded static assets |
+| Diff | `similar` |
+| Config | `serde` + `serde_yaml` |
+| Logging | `tracing` |
+
+## Key Implementation Notes
+
+1. **Periodic Scan**: Catches changes when daemon wasn't running (ftm is subprocess of larger program)
+2. **Rename Detection**: Match checksums - Delete(hash X) + Create(hash X) → Rename
+3. **Version Cleanup**: Keep newest `max_history` versions per file
+4. **Multiple Projects**: One `.ftm/` per project, one daemon runs at a time
+
+## Development Phases
+
+1. **Core**: CLI + config + file watcher + snapshot storage
+2. **Scan**: Periodic scanner + change detection + event dedup
+3. **Web**: Axum server + REST API + embedded frontend + diff/timeline
+4. **Polish**: Cleanup rotation + performance + cross-platform testing
