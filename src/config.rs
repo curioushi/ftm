@@ -30,6 +30,7 @@ impl Default for Config {
                     "*.md".into(),
                     "*.txt".into(),
                     "*.json".into(),
+                    "*.yml".into(),
                     "*.yaml".into(),
                     "*.toml".into(),
                     "*.js".into(),

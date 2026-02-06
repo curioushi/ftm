@@ -1,9 +1,10 @@
 //! Integration tests for ftm CLI commands.
 //!
-//! Run with: cargo test
+//! Run with: cargo test --release -- --test-threads=1
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use serde::Deserialize;
 use std::path::Path;
 use tempfile::tempdir;
 
@@ -43,6 +44,100 @@ fn setup_test_dir() -> TestDirGuard {
         inner: Some(tempdir().unwrap()),
     }
 }
+
+// ---------------------------------------------------------------------------
+// New helpers
+// ---------------------------------------------------------------------------
+
+/// Spawn `ftm watch` in the given directory, returning the child process.
+/// Sleeps briefly to let the watcher initialize.
+fn start_watch(dir: &Path) -> std::process::Child {
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
+        .current_dir(dir)
+        .arg("watch")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to spawn ftm watch");
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    child
+}
+
+/// Minimal deserialization structs for index.json (avoids needing chrono).
+#[derive(Debug, Deserialize)]
+struct TestIndex {
+    history: Vec<TestHistoryEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestHistoryEntry {
+    op: String,
+    file: String,
+    #[serde(default)]
+    checksum: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+/// Load and parse `.ftm/index.json` from the test directory.
+fn load_test_index(dir: &Path) -> TestIndex {
+    let content =
+        std::fs::read_to_string(dir.join(".ftm/index.json")).expect("failed to read index.json");
+    serde_json::from_str(&content).expect("failed to parse index.json")
+}
+
+/// Poll index.json until `file` has at least `min_count` entries, or timeout.
+/// Returns true if the condition was met before the timeout.
+fn wait_for_index(dir: &Path, file: &str, min_count: usize, timeout_ms: u64) -> bool {
+    let index_path = dir.join(".ftm/index.json");
+    let start = std::time::Instant::now();
+    loop {
+        if let Ok(content) = std::fs::read_to_string(&index_path) {
+            if let Ok(index) = serde_json::from_str::<TestIndex>(&content) {
+                let count = index.history.iter().filter(|e| e.file == file).count();
+                if count >= min_count {
+                    return true;
+                }
+            }
+        }
+        if start.elapsed().as_millis() as u64 > timeout_ms {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Count snapshot files (non-directory entries) under `.ftm/snapshots/`, excluding `.tmp/`.
+fn count_snapshot_files(dir: &Path) -> usize {
+    let snapshots_dir = dir.join(".ftm/snapshots");
+    if !snapshots_dir.exists() {
+        return 0;
+    }
+    count_files_recursive(&snapshots_dir)
+}
+
+fn count_files_recursive(dir: &Path) -> usize {
+    let mut count = 0;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // Skip .tmp directory
+                if path.file_name().map(|n| n == ".tmp").unwrap_or(false) {
+                    continue;
+                }
+                count += count_files_recursive(&path);
+            } else {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+// ===========================================================================
+// Test modules
+// ===========================================================================
 
 mod init_tests {
     use super::*;
@@ -248,6 +343,240 @@ mod ls_tests {
     }
 }
 
+mod watch_tests {
+    use super::*;
+
+    #[test]
+    fn test_watch_not_initialized() {
+        let dir = setup_test_dir();
+
+        ftm()
+            .current_dir(dir.path())
+            .arg("watch")
+            .timeout(std::time::Duration::from_secs(3))
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("Not initialized"));
+    }
+
+    #[test]
+    fn test_excluded_files_not_tracked() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let mut watch = start_watch(dir.path());
+
+        // Write a file inside .ftm/ (excluded by default)
+        std::fs::write(dir.path().join(".ftm/sneaky.yaml"), "should: ignore").unwrap();
+        // Write a non-matching extension file
+        std::fs::write(dir.path().join("data.bin"), "binary stuff").unwrap();
+        // Write a tracked file as a reference (to confirm watcher is running)
+        std::fs::write(dir.path().join("tracked.yaml"), "key: value").unwrap();
+
+        assert!(
+            wait_for_index(dir.path(), "tracked.yaml", 1, 2000),
+            "tracked.yaml should be recorded"
+        );
+
+        let index = load_test_index(dir.path());
+        assert!(
+            !index
+                .history
+                .iter()
+                .any(|e| e.file.contains("sneaky.yaml")),
+            "Files inside .ftm/ should not be tracked"
+        );
+        assert!(
+            !index.history.iter().any(|e| e.file.contains("data.bin")),
+            "Non-matching extension files should not be tracked"
+        );
+
+        let _ = watch.kill();
+    }
+
+    #[test]
+    fn test_non_matching_extension_ignored() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let mut watch = start_watch(dir.path());
+
+        std::fs::write(dir.path().join("app.exe"), "not tracked").unwrap();
+        std::fs::write(dir.path().join("image.png"), "not tracked").unwrap();
+        // Reference file to prove watcher is running
+        std::fs::write(dir.path().join("ref.rs"), "fn main() {}").unwrap();
+
+        assert!(
+            wait_for_index(dir.path(), "ref.rs", 1, 2000),
+            "ref.rs should be recorded"
+        );
+
+        let index = load_test_index(dir.path());
+        assert!(
+            !index.history.iter().any(|e| e.file == "app.exe"),
+            ".exe files should not be tracked"
+        );
+        assert!(
+            !index.history.iter().any(|e| e.file == "image.png"),
+            ".png files should not be tracked"
+        );
+
+        let _ = watch.kill();
+    }
+
+    #[test]
+    fn test_subdirectory_files_tracked() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let sub_dir = dir.path().join("sub/deep");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+
+        let mut watch = start_watch(dir.path());
+
+        std::fs::write(sub_dir.join("foo.rs"), "fn hello() {}").unwrap();
+
+        assert!(
+            wait_for_index(dir.path(), "sub/deep/foo.rs", 1, 2000),
+            "sub/deep/foo.rs should be recorded with relative path"
+        );
+
+        ftm()
+            .current_dir(dir.path())
+            .arg("ls")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("sub/deep/foo.rs"));
+
+        let _ = watch.kill();
+    }
+
+    #[test]
+    fn test_empty_file_ignored() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let mut watch = start_watch(dir.path());
+
+        // Write an empty file
+        std::fs::write(dir.path().join("empty.txt"), "").unwrap();
+        // Write a non-empty reference file
+        std::fs::write(dir.path().join("notempty.txt"), "hello").unwrap();
+
+        assert!(
+            wait_for_index(dir.path(), "notempty.txt", 1, 2000),
+            "notempty.txt should be recorded"
+        );
+
+        let index = load_test_index(dir.path());
+        assert!(
+            !index.history.iter().any(|e| e.file == "empty.txt"),
+            "Empty files should not be tracked"
+        );
+
+        let _ = watch.kill();
+    }
+}
+
+mod dedup_tests {
+    use super::*;
+
+    #[test]
+    fn test_same_content_no_duplicate_entry() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let mut watch = start_watch(dir.path());
+
+        let content = "key: same_content";
+
+        // First write
+        std::fs::write(dir.path().join("dup.yaml"), content).unwrap();
+        assert!(
+            wait_for_index(dir.path(), "dup.yaml", 1, 2000),
+            "First write should be recorded"
+        );
+
+        // Second write with identical content
+        std::fs::write(dir.path().join("dup.yaml"), content).unwrap();
+
+        // Write a sync marker to ensure the second write was processed by the watcher.
+        // The worker thread processes tasks sequentially, so once the sync file
+        // appears in the index, the earlier dup.yaml write must have been handled.
+        std::fs::write(dir.path().join("sync.yaml"), "sync: marker").unwrap();
+        assert!(
+            wait_for_index(dir.path(), "sync.yaml", 1, 2000),
+            "Sync marker should be recorded"
+        );
+
+        let index = load_test_index(dir.path());
+        let count = index
+            .history
+            .iter()
+            .filter(|e| e.file == "dup.yaml")
+            .count();
+        assert_eq!(
+            count, 1,
+            "Same content written twice should produce only 1 entry, got {}",
+            count
+        );
+
+        let _ = watch.kill();
+    }
+
+    #[test]
+    fn test_different_files_same_content_share_snapshot() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let mut watch = start_watch(dir.path());
+
+        let content = "shared: content_value_12345";
+        std::fs::write(dir.path().join("file_a.yaml"), content).unwrap();
+        assert!(
+            wait_for_index(dir.path(), "file_a.yaml", 1, 2000),
+            "file_a.yaml should be recorded"
+        );
+
+        std::fs::write(dir.path().join("file_b.yaml"), content).unwrap();
+        assert!(
+            wait_for_index(dir.path(), "file_b.yaml", 1, 2000),
+            "file_b.yaml should be recorded"
+        );
+
+        let index = load_test_index(dir.path());
+        // Both files should have their own history entries
+        assert!(index.history.iter().any(|e| e.file == "file_a.yaml"));
+        assert!(index.history.iter().any(|e| e.file == "file_b.yaml"));
+
+        // But there should be only 1 snapshot file (content-addressable dedup)
+        let snap_count = count_snapshot_files(dir.path());
+        assert_eq!(
+            snap_count, 1,
+            "Two files with same content should share 1 snapshot, got {}",
+            snap_count
+        );
+
+        // Both entries should have the same checksum
+        let checksum_a = index
+            .history
+            .iter()
+            .find(|e| e.file == "file_a.yaml")
+            .and_then(|e| e.checksum.as_ref());
+        let checksum_b = index
+            .history
+            .iter()
+            .find(|e| e.file == "file_b.yaml")
+            .and_then(|e| e.checksum.as_ref());
+        assert_eq!(
+            checksum_a, checksum_b,
+            "Both files should have the same checksum"
+        );
+
+        let _ = watch.kill();
+    }
+}
+
 mod history_tests {
     use super::*;
 
@@ -275,6 +604,160 @@ mod history_tests {
             .assert()
             .success()
             .stdout(predicate::str::contains("No history for"));
+    }
+}
+
+mod history_ops_tests {
+    use super::*;
+
+    #[test]
+    fn test_history_create_then_modify_ops() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let mut watch = start_watch(dir.path());
+        let file_path = dir.path().join("ops.yaml");
+
+        // Create
+        std::fs::write(&file_path, "version: 1").unwrap();
+        assert!(wait_for_index(dir.path(), "ops.yaml", 1, 2000));
+
+        // Modify
+        std::fs::write(&file_path, "version: 2").unwrap();
+        assert!(wait_for_index(dir.path(), "ops.yaml", 2, 2000));
+
+        let index = load_test_index(dir.path());
+        let entries: Vec<_> = index
+            .history
+            .iter()
+            .filter(|e| e.file == "ops.yaml")
+            .collect();
+        assert_eq!(entries.len(), 2, "Should have 2 entries");
+        assert_eq!(entries[0].op, "create", "First op should be create");
+        assert_eq!(entries[1].op, "modify", "Second op should be modify");
+
+        let _ = watch.kill();
+    }
+
+    #[test]
+    fn test_history_delete_recorded() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let mut watch = start_watch(dir.path());
+        let file_path = dir.path().join("todelete.yaml");
+
+        // Create
+        std::fs::write(&file_path, "will be deleted").unwrap();
+        assert!(wait_for_index(dir.path(), "todelete.yaml", 1, 2000));
+
+        // Delete
+        std::fs::remove_file(&file_path).unwrap();
+        // Wait for delete to be recorded (entry count should become 2)
+        assert!(
+            wait_for_index(dir.path(), "todelete.yaml", 2, 2000),
+            "Delete event should be recorded"
+        );
+
+        let index = load_test_index(dir.path());
+        let entries: Vec<_> = index
+            .history
+            .iter()
+            .filter(|e| e.file == "todelete.yaml")
+            .collect();
+        assert_eq!(
+            entries.len(),
+            2,
+            "Should have 2 entries (create + delete)"
+        );
+        assert_eq!(entries[0].op, "create");
+        assert_eq!(entries[1].op, "delete");
+        assert!(
+            entries[1].checksum.is_none(),
+            "Delete entry should have no checksum"
+        );
+        assert!(
+            entries[1].size.is_none(),
+            "Delete entry should have no size"
+        );
+
+        let _ = watch.kill();
+    }
+
+    #[test]
+    fn test_history_recreate_after_delete() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let mut watch = start_watch(dir.path());
+        let file_path = dir.path().join("recreate.yaml");
+
+        // Create
+        std::fs::write(&file_path, "original content").unwrap();
+        assert!(wait_for_index(dir.path(), "recreate.yaml", 1, 2000));
+
+        // Delete
+        std::fs::remove_file(&file_path).unwrap();
+        assert!(wait_for_index(dir.path(), "recreate.yaml", 2, 2000));
+
+        // Recreate with new content
+        std::fs::write(&file_path, "recreated content").unwrap();
+        assert!(wait_for_index(dir.path(), "recreate.yaml", 3, 2000));
+
+        let index = load_test_index(dir.path());
+        let entries: Vec<_> = index
+            .history
+            .iter()
+            .filter(|e| e.file == "recreate.yaml")
+            .collect();
+        assert_eq!(entries.len(), 3, "Should have 3 entries");
+        assert_eq!(entries[0].op, "create", "First should be create");
+        assert_eq!(entries[1].op, "delete", "Second should be delete");
+        assert_eq!(
+            entries[2].op, "create",
+            "Third should be create (after delete)"
+        );
+
+        let _ = watch.kill();
+    }
+
+    #[test]
+    fn test_history_multiple_files_independent() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let mut watch = start_watch(dir.path());
+
+        std::fs::write(dir.path().join("alpha.yaml"), "a: 1").unwrap();
+        std::fs::write(dir.path().join("beta.yaml"), "b: 1").unwrap();
+        assert!(wait_for_index(dir.path(), "alpha.yaml", 1, 2000));
+        assert!(wait_for_index(dir.path(), "beta.yaml", 1, 2000));
+
+        // Modify only alpha
+        std::fs::write(dir.path().join("alpha.yaml"), "a: 2").unwrap();
+        assert!(wait_for_index(dir.path(), "alpha.yaml", 2, 2000));
+
+        let index = load_test_index(dir.path());
+        let alpha_count = index
+            .history
+            .iter()
+            .filter(|e| e.file == "alpha.yaml")
+            .count();
+        let beta_count = index
+            .history
+            .iter()
+            .filter(|e| e.file == "beta.yaml")
+            .count();
+        assert_eq!(
+            alpha_count, 2,
+            "alpha should have 2 entries (create + modify)"
+        );
+        assert_eq!(
+            beta_count, 1,
+            "beta should still have 1 entry (create only)"
+        );
+
+        let _ = watch.kill();
     }
 }
 
@@ -306,5 +789,302 @@ mod restore_tests {
             .failure()
             .stderr(predicate::str::contains("Version not found"));
     }
+
+    #[test]
+    fn test_restore_roundtrip() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let mut watch = start_watch(dir.path());
+        let file_path = dir.path().join("roundtrip.yaml");
+
+        let v1_content = "version: 1\ndata: original";
+        let v2_content = "version: 2\ndata: modified";
+
+        // Write v1
+        std::fs::write(&file_path, v1_content).unwrap();
+        assert!(wait_for_index(dir.path(), "roundtrip.yaml", 1, 2000));
+
+        // Write v2
+        std::fs::write(&file_path, v2_content).unwrap();
+        assert!(wait_for_index(dir.path(), "roundtrip.yaml", 2, 2000));
+
+        let _ = watch.kill();
+
+        // Get v1's checksum from index
+        let index = load_test_index(dir.path());
+        let v1_entry = index
+            .history
+            .iter()
+            .find(|e| e.file == "roundtrip.yaml" && e.op == "create")
+            .expect("v1 create entry not found");
+        let v1_checksum = v1_entry.checksum.as_ref().unwrap();
+
+        // Verify current content is v2
+        let current = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(current, v2_content, "File should currently be v2");
+
+        // Restore v1
+        ftm()
+            .current_dir(dir.path())
+            .args(["restore", "roundtrip.yaml", "-c", v1_checksum])
+            .assert()
+            .success();
+
+        // Verify content is back to v1
+        let restored = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(restored, v1_content, "File content should be restored to v1");
+    }
+
+    #[test]
+    fn test_restore_with_short_checksum_prefix() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let mut watch = start_watch(dir.path());
+        let file_path = dir.path().join("prefix.yaml");
+
+        let original = "data: for_prefix_test";
+
+        std::fs::write(&file_path, original).unwrap();
+        assert!(wait_for_index(dir.path(), "prefix.yaml", 1, 2000));
+
+        std::fs::write(&file_path, "data: modified version").unwrap();
+        assert!(wait_for_index(dir.path(), "prefix.yaml", 2, 2000));
+
+        let _ = watch.kill();
+
+        let index = load_test_index(dir.path());
+        let entry = index
+            .history
+            .iter()
+            .find(|e| e.file == "prefix.yaml" && e.op == "create")
+            .unwrap();
+        let full_checksum = entry.checksum.as_ref().unwrap();
+        let short_prefix = &full_checksum[..8];
+
+        // Restore using only the first 8 chars of the checksum
+        ftm()
+            .current_dir(dir.path())
+            .args(["restore", "prefix.yaml", "-c", short_prefix])
+            .assert()
+            .success();
+
+        let restored = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(
+            restored, original,
+            "Restore with 8-char prefix should recover original content"
+        );
+    }
+
+    #[test]
+    fn test_restore_deleted_file() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        // Keep watcher running throughout the entire create → delete → restore cycle
+        let mut watch = start_watch(dir.path());
+        let file_path = dir.path().join("willdelete.yaml");
+
+        let content = "precious: data";
+        std::fs::write(&file_path, content).unwrap();
+        assert!(wait_for_index(dir.path(), "willdelete.yaml", 1, 2000));
+
+        // Delete the file and wait for the delete event to be recorded
+        std::fs::remove_file(&file_path).unwrap();
+        assert!(!file_path.exists(), "File should be deleted");
+        assert!(
+            wait_for_index(dir.path(), "willdelete.yaml", 2, 2000),
+            "Delete event should be recorded"
+        );
+
+        // Get the checksum from the create entry
+        let index = load_test_index(dir.path());
+        let entry = index
+            .history
+            .iter()
+            .find(|e| e.file == "willdelete.yaml" && e.op == "create")
+            .unwrap();
+        let checksum = entry.checksum.as_ref().unwrap().clone();
+
+        // Restore the deleted file (watcher is still running and will pick this up)
+        ftm()
+            .current_dir(dir.path())
+            .args(["restore", "willdelete.yaml", "-c", &checksum])
+            .assert()
+            .success();
+
+        assert!(file_path.exists(), "File should be restored after deletion");
+        let restored = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(
+            restored, content,
+            "Restored content should match original"
+        );
+
+        // Wait for the watcher to record the restored file as a new create
+        // (since the previous entry was delete, the new write becomes create)
+        assert!(
+            wait_for_index(dir.path(), "willdelete.yaml", 3, 2000),
+            "Restored file should be recorded as a new create entry"
+        );
+
+        let _ = watch.kill();
+
+        // Verify the full index: create → delete → create
+        let index_after = load_test_index(dir.path());
+        let entries: Vec<_> = index_after
+            .history
+            .iter()
+            .filter(|e| e.file == "willdelete.yaml")
+            .collect();
+        assert_eq!(
+            entries.len(),
+            3,
+            "Should have 3 entries: create, delete, create"
+        );
+        assert_eq!(entries[0].op, "create", "First entry should be create");
+        assert_eq!(entries[1].op, "delete", "Second entry should be delete");
+        assert_eq!(
+            entries[2].op, "create",
+            "Third entry (after restore) should be create"
+        );
+
+        // The newest create entry must be the last one and its checksum
+        // should match the original content
+        let last_entry = entries.last().unwrap();
+        assert_eq!(last_entry.op, "create", "Latest entry must be create");
+        use sha2::{Digest, Sha256};
+        let expected_checksum = hex::encode(Sha256::digest(content.as_bytes()));
+        assert_eq!(
+            last_entry.checksum.as_ref().unwrap(),
+            &expected_checksum,
+            "Latest create entry checksum should match the original content hash"
+        );
+    }
+
+    #[test]
+    fn test_restore_to_subdirectory() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let sub_dir = dir.path().join("nested/dir");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+
+        let mut watch = start_watch(dir.path());
+        let file_path = sub_dir.join("deep.yaml");
+
+        let content = "nested: file content";
+        std::fs::write(&file_path, content).unwrap();
+        assert!(wait_for_index(
+            dir.path(),
+            "nested/dir/deep.yaml",
+            1,
+            2000
+        ));
+
+        let _ = watch.kill();
+
+        // Delete the entire subdirectory tree
+        std::fs::remove_dir_all(dir.path().join("nested")).unwrap();
+        assert!(!file_path.exists());
+
+        let index = load_test_index(dir.path());
+        let entry = index
+            .history
+            .iter()
+            .find(|e| e.file == "nested/dir/deep.yaml")
+            .unwrap();
+        let checksum = entry.checksum.as_ref().unwrap();
+
+        // Restore should recreate parent directories automatically
+        ftm()
+            .current_dir(dir.path())
+            .args(["restore", "nested/dir/deep.yaml", "-c", checksum])
+            .assert()
+            .success();
+
+        assert!(
+            file_path.exists(),
+            "File should be restored with parent dirs recreated"
+        );
+        let restored = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(restored, content);
+    }
 }
 
+mod trim_tests {
+    use super::*;
+
+    #[test]
+    fn test_max_history_trims_old_entries() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        // Override max_history to 3 in config.yaml
+        let config_path = dir.path().join(".ftm/config.yaml");
+        let config_content = std::fs::read_to_string(&config_path).unwrap();
+        let new_config = config_content.replace("max_history: 100", "max_history: 3");
+        std::fs::write(&config_path, new_config).unwrap();
+
+        let mut watch = start_watch(dir.path());
+        let file_path = dir.path().join("trimme.yaml");
+
+        // Write 5 different versions with delay between each
+        for i in 0..5 {
+            std::fs::write(&file_path, format!("version: {}", i)).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+
+        // Write a sync marker to ensure all previous writes were processed.
+        // The worker thread is sequential, so once the sync file is indexed,
+        // all trimme.yaml writes must have been handled.
+        std::fs::write(dir.path().join("sync.yaml"), "sync: done").unwrap();
+        assert!(
+            wait_for_index(dir.path(), "sync.yaml", 1, 3000),
+            "Sync marker should be recorded"
+        );
+
+        let _ = watch.kill();
+
+        let index = load_test_index(dir.path());
+        let entries: Vec<_> = index
+            .history
+            .iter()
+            .filter(|e| e.file == "trimme.yaml")
+            .collect();
+
+        assert!(
+            entries.len() <= 3,
+            "max_history=3: expected at most 3 entries, got {}",
+            entries.len()
+        );
+        assert!(
+            !entries.is_empty(),
+            "Should have at least 1 entry for trimme.yaml"
+        );
+
+        // If all 5 writes were captured (very likely with 150ms interval),
+        // verify the retained entries are the newest 3 versions (2, 3, 4).
+        if entries.len() == 3 {
+            use sha2::{Digest, Sha256};
+            let expected_checksums: Vec<String> = (2..5)
+                .map(|i| hex::encode(Sha256::digest(format!("version: {}", i).as_bytes())))
+                .collect();
+            for (entry, expected) in entries.iter().zip(expected_checksums.iter()) {
+                let cs = entry.checksum.as_ref().expect("entry should have checksum");
+                assert_eq!(
+                    cs, expected,
+                    "Trimmed entries should be the newest 3 versions in order"
+                );
+            }
+            // Also verify the oldest versions were indeed trimmed away
+            let oldest_checksum = hex::encode(Sha256::digest(b"version: 0"));
+            assert!(
+                !entries
+                    .iter()
+                    .any(|e| e.checksum.as_deref() == Some(oldest_checksum.as_str())),
+                "Oldest version (version: 0) should have been trimmed"
+            );
+        }
+    }
+}
