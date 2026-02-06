@@ -1647,3 +1647,243 @@ mod scan_tests {
         stop_server(&mut server);
     }
 }
+
+// ===========================================================================
+// Version tests
+// ===========================================================================
+
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn test_version_without_server() {
+        // version should still print client version even when no server is running
+        ftm_client(19999)
+            .arg("version")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Client version:"))
+            .stdout(predicate::str::contains("not running"));
+    }
+
+    #[test]
+    fn test_version_with_server() {
+        let (mut server, port) = start_server();
+
+        ftm_client(port)
+            .arg("version")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Client version:"))
+            .stdout(predicate::str::contains("Server version:"));
+
+        stop_server(&mut server);
+    }
+}
+
+// ===========================================================================
+// Config tests
+// ===========================================================================
+
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn test_config_get_all() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        ftm_client(port)
+            .args(["config", "get"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("max_history"))
+            .stdout(predicate::str::contains("patterns"));
+
+        stop_server(&mut server);
+    }
+
+    #[test]
+    fn test_config_get_single_key() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        ftm_client(port)
+            .args(["config", "get", "settings.max_history"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("100"));
+
+        stop_server(&mut server);
+    }
+
+    #[test]
+    fn test_config_get_invalid_key() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        ftm_client(port)
+            .args(["config", "get", "nonexistent.key"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("Unknown config key"));
+
+        stop_server(&mut server);
+    }
+
+    #[test]
+    fn test_config_set_and_get() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        // Set max_history to 200
+        ftm_client(port)
+            .args(["config", "set", "settings.max_history", "200"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Set settings.max_history = 200"));
+
+        // Verify it was changed
+        ftm_client(port)
+            .args(["config", "get", "settings.max_history"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("200"));
+
+        // Verify persisted to config.yaml
+        let config_content = std::fs::read_to_string(dir.path().join(".ftm/config.yaml")).unwrap();
+        assert!(config_content.contains("200"));
+
+        stop_server(&mut server);
+    }
+
+    #[test]
+    fn test_config_set_invalid_value() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        // max_history expects a number
+        ftm_client(port)
+            .args(["config", "set", "settings.max_history", "not_a_number"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("Invalid value"));
+
+        stop_server(&mut server);
+    }
+
+    #[test]
+    fn test_config_set_watch_patterns() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        ftm_client(port)
+            .args(["config", "set", "watch.patterns", "*.rs,*.go,*.py"])
+            .assert()
+            .success();
+
+        ftm_client(port)
+            .args(["config", "get", "watch.patterns"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("*.rs"))
+            .stdout(predicate::str::contains("*.go"))
+            .stdout(predicate::str::contains("*.py"));
+
+        stop_server(&mut server);
+    }
+
+    #[test]
+    fn test_config_not_checked_out() {
+        let (mut server, port) = start_server();
+
+        ftm_client(port)
+            .args(["config", "get"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("No directory checked out"));
+
+        stop_server(&mut server);
+    }
+}
+
+// ===========================================================================
+// Logs tests
+// ===========================================================================
+
+mod logs_tests {
+    use super::*;
+
+    #[test]
+    fn test_logs_no_log_files() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        // No log dir created yet, should report no log files
+        ftm_client(port)
+            .arg("logs")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("No log files"));
+
+        stop_server(&mut server);
+    }
+
+    #[test]
+    fn test_logs_with_log_file() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        // Manually create a log file to simulate server logging
+        let log_dir = dir.path().join(".ftm/log");
+        std::fs::create_dir_all(&log_dir).unwrap();
+        std::fs::write(
+            log_dir.join("20260206-120000.log"),
+            "INFO test log line 1\nINFO test log line 2\n",
+        )
+        .unwrap();
+
+        // logs command should find the file and try less, then fallback to print
+        ftm_client(port)
+            .arg("logs")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("20260206-120000.log"));
+
+        stop_server(&mut server);
+    }
+
+    #[test]
+    fn test_logs_picks_latest_file() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        // Create multiple log files
+        let log_dir = dir.path().join(".ftm/log");
+        std::fs::create_dir_all(&log_dir).unwrap();
+        std::fs::write(log_dir.join("20260101-100000.log"), "old log\n").unwrap();
+        std::fs::write(log_dir.join("20260206-150000.log"), "new log\n").unwrap();
+
+        // Should pick the newest one (20260206-150000.log)
+        ftm_client(port)
+            .arg("logs")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("20260206-150000.log"));
+
+        stop_server(&mut server);
+    }
+
+    #[test]
+    fn test_logs_not_checked_out() {
+        let (mut server, port) = start_server();
+
+        ftm_client(port)
+            .arg("logs")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("No directory checked out"));
+
+        stop_server(&mut server);
+    }
+}

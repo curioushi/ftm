@@ -52,6 +52,28 @@ struct RestoreRequest {
     checksum: String,
 }
 
+#[derive(Deserialize)]
+struct VersionInfo {
+    version: String,
+}
+
+#[derive(Deserialize)]
+struct ConfigResponse {
+    data: String,
+}
+
+#[derive(Serialize)]
+struct ConfigSetRequest {
+    key: String,
+    value: String,
+}
+
+#[derive(Deserialize)]
+struct LogsInfo {
+    log_dir: String,
+    files: Vec<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Client helpers
 // ---------------------------------------------------------------------------
@@ -240,4 +262,93 @@ pub fn client_scan(port: u16) -> Result<()> {
         result.created, result.modified, result.deleted, result.unchanged
     );
     Ok(())
+}
+
+pub fn client_version(port: u16) -> Result<()> {
+    println!("Client version: {}", env!("CARGO_PKG_VERSION"));
+
+    match make_client()
+        .get(format!("{}/api/version", base_url(port)))
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+    {
+        Ok(resp) => {
+            let resp = check_response(resp)?;
+            let info: VersionInfo = resp.json().context("Failed to parse version response")?;
+            println!("Server version: {}", info.version);
+        }
+        Err(_) => {
+            println!("Server: not running");
+        }
+    }
+    Ok(())
+}
+
+pub fn client_config_get(port: u16, key: Option<&str>) -> Result<()> {
+    let mut req = make_client().get(format!("{}/api/config", base_url(port)));
+    if let Some(k) = key {
+        req = req.query(&[("key", k)]);
+    }
+    let resp = req.send().map_err(handle_connection_error)?;
+    let resp = check_response(resp)?;
+    let config: ConfigResponse = resp.json().context("Failed to parse config response")?;
+    println!("{}", config.data);
+    Ok(())
+}
+
+pub fn client_config_set(port: u16, key: &str, value: &str) -> Result<()> {
+    let resp = make_client()
+        .post(format!("{}/api/config", base_url(port)))
+        .json(&ConfigSetRequest {
+            key: key.to_string(),
+            value: value.to_string(),
+        })
+        .send()
+        .map_err(handle_connection_error)?;
+    let resp = check_response(resp)?;
+    let msg: MessageResponse = resp.json().context("Failed to parse response")?;
+    println!("{}", msg.message);
+    Ok(())
+}
+
+pub fn client_logs(port: u16) -> Result<()> {
+    let resp = make_client()
+        .get(format!("{}/api/logs", base_url(port)))
+        .send()
+        .map_err(handle_connection_error)?;
+    let resp = check_response(resp)?;
+    let info: LogsInfo = resp.json().context("Failed to parse logs response")?;
+
+    if info.files.is_empty() {
+        println!("No log files found in {}", info.log_dir);
+        return Ok(());
+    }
+
+    // Pick the latest log file (list is sorted newest-first by server)
+    let latest = &info.files[0];
+    let log_path = std::path::PathBuf::from(&info.log_dir).join(latest);
+    let log_path_str = log_path.to_string_lossy().to_string();
+
+    println!("Opening: {}", log_path_str);
+
+    // Try to open with `less`
+    let status = std::process::Command::new("less")
+        .arg("+G") // start at end of file
+        .arg(&log_path_str)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        _ => {
+            // Fallback: read and print the file directly
+            eprintln!("'less' not available, printing file content:");
+            let content = std::fs::read_to_string(&log_path)
+                .with_context(|| format!("Failed to read log file: {}", log_path_str))?;
+            print!("{}", content);
+            Ok(())
+        }
+    }
 }

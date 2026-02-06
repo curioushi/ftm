@@ -29,6 +29,8 @@ enum Commands {
         #[arg(long)]
         log_dir: Option<PathBuf>,
     },
+    /// Print client and server version
+    Version,
     /// Initialize .ftm in a directory and start watching
     Checkout {
         /// Directory to watch (must be absolute path)
@@ -47,6 +49,29 @@ enum Commands {
     },
     /// Scan directory for changes (detect creates, modifies, deletes)
     Scan,
+    /// Get or set configuration values
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+    /// Show logs (opens latest log file with less)
+    Logs,
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Get config value (all if no key specified)
+    Get {
+        /// Config key (e.g. settings.max_history, watch.patterns)
+        key: Option<String>,
+    },
+    /// Set a config value
+    Set {
+        /// Config key (e.g. settings.max_history, watch.patterns)
+        key: String,
+        /// New value (use comma-separated for list keys)
+        value: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -110,26 +135,36 @@ fn main() -> Result<()> {
 
             client::client_checkout(cli.port, &abs_dir.to_string_lossy())
         }
+        Commands::Version => client::client_version(cli.port),
         Commands::Ls => client::client_ls(cli.port),
         Commands::History { file } => client::client_history(cli.port, &file),
         Commands::Restore { file, checksum } => client::client_restore(cli.port, &file, &checksum),
         Commands::Scan => client::client_scan(cli.port),
+        Commands::Config { action } => match action {
+            ConfigAction::Get { key } => client::client_config_get(cli.port, key.as_deref()),
+            ConfigAction::Set { key, value } => client::client_config_set(cli.port, &key, &value),
+        },
+        Commands::Logs => client::client_logs(cli.port),
     }
 }
 
 /// Start a detached FTM server process in the background and wait for it to
 /// become healthy before returning.
 ///
-/// The server is started *without* `--log-dir` to avoid creating `.ftm/`
-/// prematurely (the checkout handler is responsible for initialising it).
-/// All server output is redirected to null.
-fn auto_start_server(port: u16, _watch_dir: &std::path::Path) -> Result<()> {
+/// The server is started with `--log-dir {watch_dir}/.ftm/log/` so that
+/// tracing output is persisted to disk and accessible via `ftm logs`.
+fn auto_start_server(port: u16, watch_dir: &std::path::Path) -> Result<()> {
     use std::process::{Command, Stdio};
 
     let exe = std::env::current_exe().context("Failed to determine current executable path")?;
 
+    let log_dir = watch_dir.join(".ftm").join("log");
     let mut cmd = Command::new(&exe);
-    cmd.arg("--port").arg(port.to_string()).arg("serve");
+    cmd.arg("--port")
+        .arg(port.to_string())
+        .arg("serve")
+        .arg("--log-dir")
+        .arg(&log_dir);
 
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())

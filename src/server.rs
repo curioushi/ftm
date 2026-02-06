@@ -87,6 +87,34 @@ struct RestoreRequest {
     checksum: String,
 }
 
+#[derive(Serialize)]
+struct VersionResponse {
+    version: String,
+}
+
+#[derive(Deserialize)]
+struct ConfigQuery {
+    key: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ConfigSetRequest {
+    key: String,
+    value: String,
+}
+
+#[derive(Serialize)]
+struct ConfigResponse {
+    /// Full YAML dump when no key is specified, or the single value.
+    data: String,
+}
+
+#[derive(Serialize)]
+struct LogsResponse {
+    log_dir: String,
+    files: Vec<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -150,15 +178,18 @@ async fn checkout(
         }
     }
 
-    // Initialize .ftm if needed
+    // Initialize .ftm if needed.
+    // Check config.yaml (not .ftm/ dir) because --log-dir may have already
+    // created .ftm/log/ before checkout runs.
     let ftm_dir = directory.join(".ftm");
-    if !ftm_dir.exists() {
+    let config_path = ftm_dir.join("config.yaml");
+    if !config_path.exists() {
         std::fs::create_dir_all(&ftm_dir)
             .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
         let config = Config::default();
         config
-            .save(&ftm_dir.join("config.yaml"))
+            .save(&config_path)
             .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
         let index = crate::types::Index::default();
@@ -257,6 +288,90 @@ async fn scan(State(state): State<SharedState>) -> Result<impl IntoResponse, Api
     Ok(Json(result))
 }
 
+async fn version_handler() -> impl IntoResponse {
+    Json(VersionResponse {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    })
+}
+
+async fn config_get(
+    State(state): State<SharedState>,
+    Query(q): Query<ConfigQuery>,
+) -> Result<Json<ConfigResponse>, ApiError> {
+    let guard = state.ctx.read().await;
+    let ctx = guard.as_ref().ok_or_else(not_checked_out)?;
+
+    let data = if let Some(key) = q.key {
+        ctx.config
+            .get_value(&key)
+            .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))?
+    } else {
+        serde_yaml::to_string(&ctx.config)
+            .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    };
+
+    Ok(Json(ConfigResponse { data }))
+}
+
+async fn config_set(
+    State(state): State<SharedState>,
+    Json(req): Json<ConfigSetRequest>,
+) -> Result<Json<MessageResponse>, ApiError> {
+    let mut guard = state.ctx.write().await;
+    let ctx = guard.as_mut().ok_or_else(not_checked_out)?;
+
+    ctx.config
+        .set_value(&req.key, &req.value)
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    // Persist to config.yaml
+    let config_path = ctx.watch_dir.join(".ftm").join("config.yaml");
+    ctx.config
+        .save(&config_path)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(MessageResponse {
+        message: format!("Set {} = {}", req.key, req.value),
+    }))
+}
+
+async fn logs_handler(State(state): State<SharedState>) -> Result<Json<LogsResponse>, ApiError> {
+    let guard = state.ctx.read().await;
+    let ctx = guard.as_ref().ok_or_else(not_checked_out)?;
+
+    let log_dir = ctx.watch_dir.join(".ftm").join("log");
+    let log_dir_str = log_dir.to_string_lossy().to_string();
+
+    if !log_dir.exists() {
+        return Ok(Json(LogsResponse {
+            log_dir: log_dir_str,
+            files: vec![],
+        }));
+    }
+
+    let mut files: Vec<String> = std::fs::read_dir(&log_dir)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with(".log") {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Sort descending (newest first) — filenames are YYYYMMDD-HHMMSS.log
+    files.sort();
+    files.reverse();
+
+    Ok(Json(LogsResponse {
+        log_dir: log_dir_str,
+        files,
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Server startup
 // ---------------------------------------------------------------------------
@@ -267,11 +382,14 @@ pub async fn serve(port: u16) -> Result<()> {
 
     let app = Router::new()
         .route("/api/health", get(health))
+        .route("/api/version", get(version_handler))
         .route("/api/checkout", post(checkout))
         .route("/api/files", get(files))
         .route("/api/history", get(history))
         .route("/api/restore", post(restore))
         .route("/api/scan", post(scan))
+        .route("/api/config", get(config_get).post(config_set))
+        .route("/api/logs", get(logs_handler))
         .route("/api/shutdown", post(shutdown_handler))
         .with_state(state);
 

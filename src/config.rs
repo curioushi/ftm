@@ -100,4 +100,53 @@ impl Config {
 
         false
     }
+
+    /// Get a config value by dot-notation key (e.g. "settings.max_history").
+    pub fn get_value(&self, key: &str) -> Result<String> {
+        match key {
+            "settings.max_history" => Ok(self.settings.max_history.to_string()),
+            "settings.max_file_size" => Ok(self.settings.max_file_size.to_string()),
+            "settings.web_port" => Ok(self.settings.web_port.to_string()),
+            "watch.patterns" => Ok(self.watch.patterns.join(",")),
+            "watch.exclude" => Ok(self.watch.exclude.join(",")),
+            _ => anyhow::bail!(
+                "Unknown config key '{}'. Valid keys: settings.max_history, \
+                 settings.max_file_size, settings.web_port, watch.patterns, watch.exclude",
+                key
+            ),
+        }
+    }
+
+    /// Set a config value by dot-notation key (e.g. "settings.max_history").
+    pub fn set_value(&mut self, key: &str, value: &str) -> Result<()> {
+        match key {
+            "settings.max_history" => {
+                self.settings.max_history = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid value for max_history: {}", value))?;
+            }
+            "settings.max_file_size" => {
+                self.settings.max_file_size = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid value for max_file_size: {}", value))?;
+            }
+            "settings.web_port" => {
+                self.settings.web_port = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid value for web_port: {}", value))?;
+            }
+            "watch.patterns" => {
+                self.watch.patterns = value.split(',').map(|s| s.trim().to_string()).collect();
+            }
+            "watch.exclude" => {
+                self.watch.exclude = value.split(',').map(|s| s.trim().to_string()).collect();
+            }
+            _ => anyhow::bail!(
+                "Unknown config key '{}'. Valid keys: settings.max_history, \
+                 settings.max_file_size, settings.web_port, watch.patterns, watch.exclude",
+                key
+            ),
+        }
+        Ok(())
+    }
 }
