@@ -233,7 +233,88 @@ mod checkout_tests {
     }
 
     #[test]
-    fn test_checkout_already_checked_out() {
+    fn test_checkout_auto_starts_server() {
+        let dir = setup_test_dir();
+
+        // Use a random port to avoid conflicts
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener); // free the port
+
+        // Checkout without a running server — should auto-start one.
+        // Capture output so we can parse the server PID from stderr.
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
+            .args([
+                "--port",
+                &port.to_string(),
+                "checkout",
+                dir.path().to_str().unwrap(),
+            ])
+            .output()
+            .expect("failed to run ftm checkout");
+        assert!(output.status.success(), "checkout should succeed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("Checked out and watching"),
+            "stdout should contain success message, got: {}",
+            stdout
+        );
+
+        // Parse server PID from stderr: "Starting FTM server on port X (pid: Y)..."
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let server_pid: Option<u32> = stderr.lines().find(|l| l.contains("pid:")).and_then(|l| {
+            l.split("pid: ")
+                .nth(1)?
+                .trim_end_matches(|c: char| !c.is_ascii_digit())
+                .parse()
+                .ok()
+        });
+
+        // .ftm directory should have been created by the checkout handler
+        assert!(dir.path().join(".ftm").exists());
+        assert!(dir.path().join(".ftm/config.yaml").exists());
+        assert!(dir.path().join(".ftm/index.json").exists());
+
+        // Server should now be reachable
+        let health_resp = reqwest::blocking::Client::new()
+            .get(format!("http://127.0.0.1:{}/api/health", port))
+            .timeout(std::time::Duration::from_secs(2))
+            .send();
+        assert!(
+            health_resp.is_ok() && health_resp.unwrap().status().is_success(),
+            "Server should be healthy after auto-start"
+        );
+
+        // Write a file and verify the watcher is functional
+        std::fs::write(dir.path().join("autotest.yaml"), "key: value").unwrap();
+        assert!(
+            wait_for_index(dir.path(), "autotest.yaml", 1, 3000),
+            "Watcher should be functional after auto-start"
+        );
+
+        // Clean up: kill the auto-started server
+        if let Some(pid) = server_pid {
+            #[cfg(unix)]
+            {
+                std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .output()
+                    .ok();
+                // Wait briefly for the process to exit
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            #[cfg(windows)]
+            {
+                std::process::Command::new("taskkill")
+                    .args(["/F", "/PID", &pid.to_string()])
+                    .output()
+                    .ok();
+            }
+        }
+    }
+
+    #[test]
+    fn test_checkout_same_dir_is_noop() {
         let dir = setup_test_dir();
         let (mut server, port) = start_server();
 
@@ -243,14 +324,139 @@ mod checkout_tests {
             .assert()
             .success();
 
-        // Second checkout should fail
+        // Second checkout of the same directory should be a no-op
         ftm_client(port)
             .args(["checkout", dir.path().to_str().unwrap()])
             .assert()
-            .failure()
-            .stderr(predicate::str::contains("Already watching"));
+            .success()
+            .stdout(predicate::str::contains("Already watching"));
 
         stop_server(&mut server);
+    }
+
+    #[test]
+    fn test_checkout_switch_directory() {
+        let dir_a = setup_test_dir();
+        let dir_b = setup_test_dir();
+
+        // Use a random port to avoid conflicts
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        // Checkout dir A (auto-starts server)
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
+            .args([
+                "--port",
+                &port.to_string(),
+                "checkout",
+                dir_a.path().to_str().unwrap(),
+            ])
+            .output()
+            .expect("failed to run ftm checkout A");
+        assert!(
+            output.status.success(),
+            "First checkout should succeed: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+
+        // Verify dir A is being watched
+        assert!(dir_a.path().join(".ftm").exists());
+
+        // Write a file to dir A and confirm watcher is working
+        std::fs::write(dir_a.path().join("a.yaml"), "a: 1").unwrap();
+        assert!(
+            wait_for_index(dir_a.path(), "a.yaml", 1, 3000),
+            "Watcher should be functional on dir A"
+        );
+
+        // Checkout dir B — should switch: shutdown old server, start new, checkout
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
+            .args([
+                "--port",
+                &port.to_string(),
+                "checkout",
+                dir_b.path().to_str().unwrap(),
+            ])
+            .output()
+            .expect("failed to run ftm checkout B");
+        let stdout_b = String::from_utf8_lossy(&output.stdout);
+        let stderr_b = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "Switch checkout should succeed: stdout={}, stderr={}",
+            stdout_b,
+            stderr_b,
+        );
+        assert!(
+            stderr_b.contains("Switching"),
+            "Expected 'Switching' message in stderr, got: {}",
+            stderr_b
+        );
+        assert!(
+            stdout_b.contains("Checked out and watching"),
+            "Expected checkout success in stdout, got: {}",
+            stdout_b
+        );
+
+        // Verify dir B is being watched
+        assert!(dir_b.path().join(".ftm").exists());
+
+        // Write to dir B and verify watcher works on the new directory
+        std::fs::write(dir_b.path().join("b.yaml"), "b: 1").unwrap();
+        assert!(
+            wait_for_index(dir_b.path(), "b.yaml", 1, 3000),
+            "Watcher should be functional on dir B after switch"
+        );
+
+        // ls should show dir B
+        let ls_out = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
+            .args(["--port", &port.to_string(), "ls"])
+            .output()
+            .expect("failed to run ftm ls");
+        let ls_stdout = String::from_utf8_lossy(&ls_out.stdout);
+        let dir_b_str = dir_b
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| dir_b.path().to_path_buf())
+            .to_string_lossy()
+            .to_string();
+        assert!(
+            ls_stdout.contains(&dir_b_str),
+            "ls should show dir B path, got: {}",
+            ls_stdout
+        );
+
+        // Clean up: parse last server PID from stderr and kill
+        let last_pid: Option<u32> = stderr_b
+            .lines()
+            .rev()
+            .find(|l| l.contains("pid:"))
+            .and_then(|l| {
+                l.split("pid: ")
+                    .nth(1)?
+                    .trim_end_matches(|c: char| !c.is_ascii_digit())
+                    .parse()
+                    .ok()
+            });
+        if let Some(pid) = last_pid {
+            #[cfg(unix)]
+            {
+                std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .output()
+                    .ok();
+            }
+            #[cfg(windows)]
+            {
+                std::process::Command::new("taskkill")
+                    .args(["/F", "/PID", &pid.to_string()])
+                    .output()
+                    .ok();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
     }
 }
 
@@ -266,6 +472,36 @@ mod ls_tests {
             .assert()
             .failure()
             .stderr(predicate::str::contains("No directory checked out"));
+
+        stop_server(&mut server);
+    }
+
+    #[test]
+    fn test_ls_shows_watch_dir() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        let output = ftm_client(port)
+            .arg("ls")
+            .output()
+            .expect("failed to run ls");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        let dir_str = dir
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| dir.path().to_path_buf())
+            .to_string_lossy()
+            .to_string();
+        assert!(
+            stdout.contains(&dir_str),
+            "ls should show watch directory, got: {}",
+            stdout
+        );
+        assert!(
+            stdout.contains("Watch directory:"),
+            "ls output should have 'Watch directory:' label"
+        );
 
         stop_server(&mut server);
     }

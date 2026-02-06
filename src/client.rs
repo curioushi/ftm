@@ -11,6 +11,13 @@ struct MessageResponse {
 }
 
 #[derive(Deserialize)]
+pub struct HealthInfo {
+    #[allow(dead_code)]
+    pub status: String,
+    pub watch_dir: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct FileEntry {
     pub path: String,
     pub count: usize,
@@ -83,6 +90,53 @@ fn check_response(resp: reqwest::blocking::Response) -> Result<reqwest::blocking
 // Public client functions
 // ---------------------------------------------------------------------------
 
+/// Check whether the server is reachable on the given port.
+pub fn is_server_running(port: u16) -> bool {
+    make_client()
+        .get(format!("{}/api/health", base_url(port)))
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+/// Fetch health info from the server (including current watch dir).
+pub fn client_health(port: u16) -> Result<HealthInfo> {
+    let resp = make_client()
+        .get(format!("{}/api/health", base_url(port)))
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .map_err(handle_connection_error)?;
+    let resp = check_response(resp)?;
+    resp.json().context("Failed to parse health response")
+}
+
+/// Request the server to shut down gracefully.
+pub fn client_shutdown(port: u16) -> Result<()> {
+    let resp = make_client()
+        .post(format!("{}/api/shutdown", base_url(port)))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .map_err(handle_connection_error)?;
+    let _ = check_response(resp)?;
+    Ok(())
+}
+
+/// Poll the health endpoint until the server stops responding, or timeout.
+/// Returns `true` if the server stopped, `false` on timeout.
+pub fn wait_for_server_shutdown(port: u16, timeout: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        if !is_server_running(port) {
+            return true;
+        }
+        if start.elapsed() > timeout {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 pub fn client_checkout(port: u16, directory: &str) -> Result<()> {
     let resp = make_client()
         .post(format!("{}/api/checkout", base_url(port)))
@@ -98,6 +152,13 @@ pub fn client_checkout(port: u16, directory: &str) -> Result<()> {
 }
 
 pub fn client_ls(port: u16) -> Result<()> {
+    // Best-effort: show current watch directory
+    if let Ok(health) = client_health(port) {
+        if let Some(dir) = &health.watch_dir {
+            println!("Watch directory: {}", dir);
+        }
+    }
+
     let resp = make_client()
         .get(format!("{}/api/files", base_url(port)))
         .send()

@@ -24,7 +24,6 @@ ftm-cli serve --web        # Start daemon, optinally with web UI
 # Client
 ftm-cli version            # Print Server and Client version
 ftm-cli checkout <directory> # Request server to init .ftm in <directory> and begin to watch
-ftm-cli lsdir              # List all watched .ftm, highlight current watch dir
 ftm-cli ls                 # List all files in current watch dir
 ftm-cli history <file>     # List history of file in current watch dir
 ftm-cli restore <file> --version <id>

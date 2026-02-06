@@ -12,7 +12,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 use tracing::info;
 
 // ---------------------------------------------------------------------------
@@ -26,12 +26,14 @@ struct WatchContext {
 
 pub struct AppState {
     ctx: RwLock<Option<WatchContext>>,
+    shutdown: Notify,
 }
 
 impl AppState {
     fn new() -> Self {
         Self {
             ctx: RwLock::new(None),
+            shutdown: Notify::new(),
         }
     }
 
@@ -234,6 +236,14 @@ async fn restore(
     }))
 }
 
+async fn shutdown_handler(State(state): State<SharedState>) -> Json<MessageResponse> {
+    info!("Shutdown requested via API");
+    state.shutdown.notify_one();
+    Json(MessageResponse {
+        message: "Shutting down".into(),
+    })
+}
+
 async fn scan(State(state): State<SharedState>) -> Result<impl IntoResponse, ApiError> {
     let (storage, watch_dir) = state.storage().await.ok_or_else(not_checked_out)?;
     let config = {
@@ -253,6 +263,7 @@ async fn scan(State(state): State<SharedState>) -> Result<impl IntoResponse, Api
 
 pub async fn serve(port: u16) -> Result<()> {
     let state = Arc::new(AppState::new());
+    let shutdown_state = state.clone();
 
     let app = Router::new()
         .route("/api/health", get(health))
@@ -261,6 +272,7 @@ pub async fn serve(port: u16) -> Result<()> {
         .route("/api/history", get(history))
         .route("/api/restore", post(restore))
         .route("/api/scan", post(scan))
+        .route("/api/shutdown", post(shutdown_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
@@ -271,6 +283,33 @@ pub async fn serve(port: u16) -> Result<()> {
     // Print the actual address so tests can parse it when using port 0
     println!("Listening on {}", local_addr);
 
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(shutdown_state))
+        .await?;
+
+    info!("Server stopped");
     Ok(())
+}
+
+/// Wait for either an API shutdown request or an OS termination signal.
+async fn shutdown_signal(state: SharedState) {
+    let api = state.shutdown.notified();
+
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
+        tokio::select! {
+            _ = api => info!("Graceful shutdown triggered via API"),
+            _ = sigterm.recv() => info!("Received SIGTERM, shutting down"),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::select! {
+            _ = api => info!("Graceful shutdown triggered via API"),
+            _ = tokio::signal::ctrl_c() => info!("Received Ctrl-C, shutting down"),
+        }
+    }
 }

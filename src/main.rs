@@ -6,7 +6,7 @@ mod storage;
 mod types;
 mod watcher;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -73,12 +73,94 @@ fn main() -> Result<()> {
                 std::env::current_dir()?.join(directory)
             };
             let abs_dir = abs_dir.canonicalize().unwrap_or_else(|_| abs_dir.clone());
+
+            if client::is_server_running(cli.port) {
+                // Server is alive — check what it is watching
+                if let Ok(health) = client::client_health(cli.port) {
+                    if let Some(ref old_dir) = health.watch_dir {
+                        let old_path = PathBuf::from(old_dir);
+                        if old_path == abs_dir {
+                            // Same directory — nothing to do
+                            println!("Already watching: {}", abs_dir.display());
+                            return Ok(());
+                        }
+                        // Different directory — switch
+                        eprintln!(
+                            "Switching watch directory: {} -> {}",
+                            old_dir,
+                            abs_dir.display()
+                        );
+                        let _ = client::client_shutdown(cli.port);
+                        if !client::wait_for_server_shutdown(
+                            cli.port,
+                            std::time::Duration::from_secs(2),
+                        ) {
+                            anyhow::bail!("Server did not stop within 2 seconds");
+                        }
+                        // Start a fresh server for the new directory
+                        auto_start_server(cli.port, &abs_dir)?;
+                    }
+                    // else: server running, not watching anything — just checkout below
+                }
+                // else: health call failed — try checkout anyway
+            } else {
+                // Server not running — auto-start
+                auto_start_server(cli.port, &abs_dir)?;
+            }
+
             client::client_checkout(cli.port, &abs_dir.to_string_lossy())
         }
         Commands::Ls => client::client_ls(cli.port),
         Commands::History { file } => client::client_history(cli.port, &file),
         Commands::Restore { file, checksum } => client::client_restore(cli.port, &file, &checksum),
         Commands::Scan => client::client_scan(cli.port),
+    }
+}
+
+/// Start a detached FTM server process in the background and wait for it to
+/// become healthy before returning.
+///
+/// The server is started *without* `--log-dir` to avoid creating `.ftm/`
+/// prematurely (the checkout handler is responsible for initialising it).
+/// All server output is redirected to null.
+fn auto_start_server(port: u16, _watch_dir: &std::path::Path) -> Result<()> {
+    use std::process::{Command, Stdio};
+
+    let exe = std::env::current_exe().context("Failed to determine current executable path")?;
+
+    let mut cmd = Command::new(&exe);
+    cmd.arg("--port").arg(port.to_string()).arg("serve");
+
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    // On Unix, put the child in its own process group so it won't receive
+    // signals (e.g. Ctrl-C) sent to the parent's group.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+
+    let child = cmd.spawn().context("Failed to start FTM server")?;
+    let pid = child.id();
+
+    eprintln!("Starting FTM server on port {} (pid: {})...", port, pid);
+
+    // Poll until the server is healthy or timeout.
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(10);
+
+    loop {
+        if client::is_server_running(port) {
+            eprintln!("Server is ready.");
+            return Ok(());
+        }
+        if start.elapsed() > timeout {
+            anyhow::bail!("Timed out waiting for FTM server to start on port {}", port);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
