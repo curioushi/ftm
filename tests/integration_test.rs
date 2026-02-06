@@ -1088,3 +1088,305 @@ mod trim_tests {
         }
     }
 }
+
+mod scan_tests {
+    use super::*;
+
+    #[test]
+    fn test_scan_not_initialized() {
+        let dir = setup_test_dir();
+
+        ftm()
+            .current_dir(dir.path())
+            .arg("scan")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("Not initialized"));
+    }
+
+    #[test]
+    fn test_scan_detects_new_files() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        // Create files without the watcher running
+        std::fs::write(dir.path().join("hello.rs"), "fn main() {}").unwrap();
+        std::fs::write(dir.path().join("world.py"), "print('hi')").unwrap();
+
+        ftm()
+            .current_dir(dir.path())
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("2 created"))
+            .stdout(predicate::str::contains("0 modified"))
+            .stdout(predicate::str::contains("0 deleted"));
+
+        let index = load_test_index(dir.path());
+        let entries: Vec<_> = index.history.iter().collect();
+        assert_eq!(entries.len(), 2, "Should have 2 entries after scan");
+        assert!(entries.iter().all(|e| e.op == "create"));
+        assert!(entries.iter().any(|e| e.file == "hello.rs"));
+        assert!(entries.iter().any(|e| e.file == "world.py"));
+    }
+
+    #[test]
+    fn test_scan_detects_modifications() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        // Create baseline
+        std::fs::write(dir.path().join("app.rs"), "fn main() {}").unwrap();
+        ftm()
+            .current_dir(dir.path())
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("1 created"));
+
+        // Modify the file
+        std::fs::write(dir.path().join("app.rs"), "fn main() { println!(\"hi\"); }").unwrap();
+        ftm()
+            .current_dir(dir.path())
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("1 modified"))
+            .stdout(predicate::str::contains("0 created"));
+
+        let index = load_test_index(dir.path());
+        let entries: Vec<_> = index
+            .history
+            .iter()
+            .filter(|e| e.file == "app.rs")
+            .collect();
+        assert_eq!(entries.len(), 2, "Should have create + modify");
+        assert_eq!(entries[0].op, "create");
+        assert_eq!(entries[1].op, "modify");
+    }
+
+    #[test]
+    fn test_scan_detects_deletions() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        // Create and scan to establish baseline
+        std::fs::write(dir.path().join("temp.txt"), "temporary content").unwrap();
+        ftm()
+            .current_dir(dir.path())
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("1 created"));
+
+        // Delete the file
+        std::fs::remove_file(dir.path().join("temp.txt")).unwrap();
+        ftm()
+            .current_dir(dir.path())
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("1 deleted"))
+            .stdout(predicate::str::contains("0 created"));
+
+        let index = load_test_index(dir.path());
+        let entries: Vec<_> = index
+            .history
+            .iter()
+            .filter(|e| e.file == "temp.txt")
+            .collect();
+        assert_eq!(entries.len(), 2, "Should have create + delete");
+        assert_eq!(entries[0].op, "create");
+        assert_eq!(entries[1].op, "delete");
+    }
+
+    #[test]
+    fn test_scan_no_changes_second_run() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        std::fs::write(dir.path().join("stable.md"), "# Stable").unwrap();
+
+        // First scan
+        ftm()
+            .current_dir(dir.path())
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("1 created"));
+
+        // Second scan - nothing changed
+        ftm()
+            .current_dir(dir.path())
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("0 created"))
+            .stdout(predicate::str::contains("0 modified"))
+            .stdout(predicate::str::contains("0 deleted"))
+            .stdout(predicate::str::contains("1 unchanged"));
+
+        // Index should still only have 1 entry
+        let index = load_test_index(dir.path());
+        let count = index
+            .history
+            .iter()
+            .filter(|e| e.file == "stable.md")
+            .count();
+        assert_eq!(count, 1, "No new entries should be added on unchanged scan");
+    }
+
+    #[test]
+    fn test_scan_ignores_non_matching_patterns() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        // Create files with non-matching extensions
+        std::fs::write(dir.path().join("image.png"), "not tracked").unwrap();
+        std::fs::write(dir.path().join("binary.exe"), "not tracked").unwrap();
+        // Create a matching file as reference
+        std::fs::write(dir.path().join("code.rs"), "fn test() {}").unwrap();
+
+        ftm()
+            .current_dir(dir.path())
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("1 created"));
+
+        let index = load_test_index(dir.path());
+        assert_eq!(index.history.len(), 1, "Only matching file should be tracked");
+        assert_eq!(index.history[0].file, "code.rs");
+    }
+
+    #[test]
+    fn test_scan_skips_large_files() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        // Override max_file_size to 100 bytes in config
+        let config_path = dir.path().join(".ftm/config.yaml");
+        let config_content = std::fs::read_to_string(&config_path).unwrap();
+        let new_config = config_content.replace("max_file_size: 10485760", "max_file_size: 100");
+        std::fs::write(&config_path, new_config).unwrap();
+
+        // Create a small file and a large file
+        std::fs::write(dir.path().join("small.txt"), "tiny").unwrap();
+        std::fs::write(dir.path().join("large.txt"), "x".repeat(200)).unwrap();
+
+        ftm()
+            .current_dir(dir.path())
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("1 created"));
+
+        let index = load_test_index(dir.path());
+        assert_eq!(index.history.len(), 1);
+        assert_eq!(index.history[0].file, "small.txt");
+    }
+
+    #[test]
+    fn test_scan_subdirectories() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let sub_dir = dir.path().join("src/lib");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        std::fs::write(sub_dir.join("mod.rs"), "pub mod lib;").unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        ftm()
+            .current_dir(dir.path())
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("2 created"));
+
+        let index = load_test_index(dir.path());
+        assert!(index.history.iter().any(|e| e.file == "src/lib/mod.rs"));
+        assert!(index.history.iter().any(|e| e.file == "main.rs"));
+    }
+
+    #[test]
+    fn test_scan_skips_excluded_directories() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        // Create files in excluded directories
+        let target_dir = dir.path().join("target/debug");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        std::fs::write(target_dir.join("build.rs"), "// build artifact").unwrap();
+
+        let node_dir = dir.path().join("node_modules/pkg");
+        std::fs::create_dir_all(&node_dir).unwrap();
+        std::fs::write(node_dir.join("index.js"), "module.exports = {}").unwrap();
+
+        // Create a normal tracked file
+        std::fs::write(dir.path().join("app.rs"), "fn main() {}").unwrap();
+
+        ftm()
+            .current_dir(dir.path())
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("1 created"));
+
+        let index = load_test_index(dir.path());
+        assert_eq!(index.history.len(), 1);
+        assert_eq!(index.history[0].file, "app.rs");
+    }
+
+    #[test]
+    fn test_scan_empty_files_ignored() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        std::fs::write(dir.path().join("empty.rs"), "").unwrap();
+        std::fs::write(dir.path().join("notempty.rs"), "fn x() {}").unwrap();
+
+        ftm()
+            .current_dir(dir.path())
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("1 created"));
+
+        let index = load_test_index(dir.path());
+        assert_eq!(index.history.len(), 1);
+        assert_eq!(index.history[0].file, "notempty.rs");
+    }
+
+    #[test]
+    fn test_scan_dedup_same_content() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let content = "shared: content";
+        std::fs::write(dir.path().join("a.yaml"), content).unwrap();
+        std::fs::write(dir.path().join("b.yaml"), content).unwrap();
+
+        ftm()
+            .current_dir(dir.path())
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("2 created"));
+
+        // Both entries should share the same snapshot
+        let snap_count = count_snapshot_files(dir.path());
+        assert_eq!(
+            snap_count, 1,
+            "Two files with same content should share 1 snapshot"
+        );
+
+        let index = load_test_index(dir.path());
+        let checksums: Vec<_> = index
+            .history
+            .iter()
+            .filter_map(|e| e.checksum.as_ref())
+            .collect();
+        assert_eq!(checksums.len(), 2);
+        assert_eq!(checksums[0], checksums[1], "Checksums should match");
+    }
+}

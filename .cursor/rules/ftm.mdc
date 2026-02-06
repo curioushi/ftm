@@ -58,12 +58,12 @@ struct FileEvent {
 ```
 project/
 └── .ftm/
-    ├── config.yaml          # Watch patterns, max_history, scan_interval
-    ├── index.json           # File index and metadata
-    └── snapshots/<hash>/
-        ├── meta.json
-        └── versions/
-            └── <timestamp>_<shorthash>.<ext>
+    ├── config.yaml            # Watch patterns, max_history, max_file_size
+    ├── index.json             # All history entries (HistoryEntry[])
+    └── snapshots/
+        ├── .tmp/              # Temp files during write (UUID names)
+        └── <c1>/<c2>/<sha256> # Content-addressable: two-level dir sharding
+                               # e.g. a/3/a3f8e2...full_hash (raw file copy)
 ```
 
 ### Config Example (`.ftm/config.yaml`)

@@ -1,4 +1,5 @@
 mod config;
+mod scanner;
 mod storage;
 mod types;
 mod watcher;
@@ -8,6 +9,7 @@ use chrono::Local;
 use clap::{Parser, Subcommand};
 use config::Config;
 use std::path::PathBuf;
+use scanner::Scanner;
 use storage::Storage;
 use tracing::info;
 use watcher::FileWatcher;
@@ -38,6 +40,8 @@ enum Commands {
         #[arg(short, long)]
         checksum: String,
     },
+    /// Scan directory for changes (detect creates, modifies, deletes)
+    Scan,
 }
 
 fn get_ftm_dir() -> Result<PathBuf> {
@@ -132,6 +136,23 @@ fn cmd_history(file: &str) -> Result<()> {
     Ok(())
 }
 
+fn cmd_scan() -> Result<()> {
+    let ftm_dir = ensure_initialized()?;
+    let root_dir = std::env::current_dir()?;
+    let config = Config::load(&ftm_dir.join("config.yaml")).context("Failed to load config")?;
+    let storage = Storage::new(ftm_dir, config.settings.max_history);
+    let scanner = Scanner::new(root_dir, config, storage);
+
+    println!("Scanning for changes...");
+    let result = scanner.scan()?;
+
+    println!(
+        "Scan complete: {} created, {} modified, {} deleted, {} unchanged",
+        result.created, result.modified, result.deleted, result.unchanged
+    );
+    Ok(())
+}
+
 fn cmd_restore(file: &str, checksum: &str) -> Result<()> {
     let ftm_dir = ensure_initialized()?;
     let root_dir = std::env::current_dir()?;
@@ -157,5 +178,6 @@ fn main() -> Result<()> {
         Commands::Ls => cmd_ls(),
         Commands::History { file } => cmd_history(&file),
         Commands::Restore { file, checksum } => cmd_restore(&file, &checksum),
+        Commands::Scan => cmd_scan(),
     }
 }

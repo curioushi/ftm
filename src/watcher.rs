@@ -1,7 +1,6 @@
 use crate::config::Config;
 use crate::storage::Storage;
 use anyhow::Result;
-use glob::Pattern;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -29,31 +28,7 @@ impl FileWatcher {
     }
 
     fn should_watch(&self, path: &Path) -> bool {
-        let rel_path = path.strip_prefix(&self.root_dir).unwrap_or(path);
-        let path_str = rel_path.to_string_lossy();
-
-        // Check exclude patterns
-        for pattern in &self.config.watch.exclude {
-            if let Ok(p) = Pattern::new(pattern) {
-                if p.matches(&path_str) {
-                    return false;
-                }
-            }
-        }
-
-        // Check include patterns
-        if let Some(ext) = path.extension() {
-            let ext_pattern = format!("*.{}", ext.to_string_lossy());
-            for pattern in &self.config.watch.patterns {
-                if pattern == &ext_pattern
-                    || pattern.ends_with(&format!(".{}", ext.to_string_lossy()))
-                {
-                    return true;
-                }
-            }
-        }
-
-        false
+        self.config.matches_path(path, &self.root_dir)
     }
 
     fn handle_event(&self, event: Event, task_tx: &mpsc::Sender<WorkerTask>) {
