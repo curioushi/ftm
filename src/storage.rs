@@ -65,12 +65,13 @@ impl Storage {
     }
 
     /// Stream file: read in chunks, hash and write to temp in one pass, then rename to snapshot path.
-    /// Returns (checksum, size). Caller must remove temp on same-checksum early return.
+    /// Returns (checksum, size), or None if the file was modified during read.
+    /// Caller must remove temp on same-checksum early return.
     fn stream_hash_and_save(
         &self,
         file_path: &Path,
         tmp_path: &Path,
-    ) -> Result<(String, u64)> {
+    ) -> Result<Option<(String, u64)>> {
         const BUF_SIZE: usize = 65536;
         let mut reader = std::fs::File::open(file_path).context("Failed to read file")?;
         let mut tmp_file = std::fs::File::create(tmp_path)?;
@@ -86,7 +87,16 @@ impl Storage {
         }
         let checksum = hex::encode(hasher.finalize());
         let size = std::fs::metadata(tmp_path)?.len();
-        Ok((checksum, size))
+
+        // Verify the file was not modified during our read.
+        // If the current on-disk size differs from what we read, another write
+        // has started (truncate + partial write), so discard this snapshot.
+        let current_size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
+        if current_size != size {
+            return Ok(None);
+        }
+
+        Ok(Some((checksum, size)))
     }
 
     pub fn save_snapshot(&self, file_path: &Path, root_dir: &Path) -> Result<Option<HistoryEntry>> {
@@ -97,7 +107,18 @@ impl Storage {
         std::fs::create_dir_all(&tmp_dir)?;
         let tmp_path = tmp_dir.join(uuid::Uuid::new_v4().to_string());
 
-        let (checksum, size) = self.stream_hash_and_save(file_path, &tmp_path)?;
+        let (checksum, size) = match self.stream_hash_and_save(file_path, &tmp_path)? {
+            Some(v) => v,
+            None => {
+                std::fs::remove_file(&tmp_path).ok();
+                return Ok(None);
+            }
+        };
+
+        if size == 0 {
+            std::fs::remove_file(&tmp_path).ok();
+            return Ok(None);
+        }
 
         let mut index = self.load_index()?;
         let last_entry = self.get_last_entry_for_file(&index, &file_key);

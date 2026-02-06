@@ -57,18 +57,11 @@ impl FileWatcher {
     }
 
     fn handle_event(&self, event: Event, task_tx: &mpsc::Sender<WorkerTask>) {
-        use notify::event::{AccessKind, AccessMode, CreateKind};
+        use notify::event::{AccessKind, AccessMode};
         use notify::EventKind::*;
 
         match event.kind {
             Access(AccessKind::Close(AccessMode::Write)) => {
-                for path in event.paths {
-                    if path.is_file() && self.should_watch(&path) {
-                        let _ = task_tx.send(WorkerTask::Snapshot(path));
-                    }
-                }
-            }
-            Create(CreateKind::File) => {
                 for path in event.paths {
                     if path.is_file() && self.should_watch(&path) {
                         let _ = task_tx.send(WorkerTask::Snapshot(path));
