@@ -8,8 +8,9 @@ use anyhow::{Context, Result};
 use chrono::Local;
 use clap::{Parser, Subcommand};
 use config::Config;
-use std::path::PathBuf;
 use scanner::Scanner;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use storage::Storage;
 use tracing::info;
 use watcher::FileWatcher;
@@ -28,7 +29,11 @@ enum Commands {
     /// Initialize .ftm in current directory
     Init,
     /// Start watching for file changes
-    Watch,
+    Watch {
+        /// Custom log directory (default: .ftm/log/)
+        #[arg(long)]
+        log_dir: Option<PathBuf>,
+    },
     /// List tracked files
     Ls,
     /// Show version history for a file
@@ -57,6 +62,32 @@ fn ensure_initialized() -> Result<PathBuf> {
     Ok(ftm_dir)
 }
 
+/// Initialize file-based logging for the watcher.
+/// Returns the path to the created log file.
+fn init_file_logging(ftm_dir: &Path, log_dir: Option<&Path>) -> Result<PathBuf> {
+    let log_path = match log_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => ftm_dir.join("log"),
+    };
+
+    std::fs::create_dir_all(&log_path)
+        .with_context(|| format!("Failed to create log directory: {}", log_path.display()))?;
+
+    let now = Local::now();
+    let log_filename = now.format("%Y%m%d-%H%M%S.log").to_string();
+    let log_file_path = log_path.join(&log_filename);
+
+    let log_file = std::fs::File::create(&log_file_path)
+        .with_context(|| format!("Failed to create log file: {}", log_file_path.display()))?;
+
+    tracing_subscriber::fmt()
+        .with_writer(Mutex::new(log_file))
+        .with_ansi(false)
+        .init();
+
+    Ok(log_file_path)
+}
+
 fn cmd_init() -> Result<()> {
     let ftm_dir = get_ftm_dir()?;
     if ftm_dir.exists() {
@@ -77,9 +108,12 @@ fn cmd_init() -> Result<()> {
     Ok(())
 }
 
-fn cmd_watch() -> Result<()> {
+fn cmd_watch(log_dir: Option<&Path>) -> Result<()> {
     let ftm_dir = ensure_initialized()?;
     let root_dir = std::env::current_dir()?;
+
+    let log_file_path = init_file_logging(&ftm_dir, log_dir)?;
+    println!("Log file: {}", log_file_path.display());
 
     let config = Config::load(&ftm_dir.join("config.yaml")).context("Failed to load config")?;
     let storage = Storage::new(ftm_dir, config.settings.max_history);
@@ -169,12 +203,17 @@ fn cmd_restore(file: &str, checksum: &str) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
     let cli = Cli::parse();
+
+    // Watch command sets up file-based logging inside cmd_watch;
+    // all other commands use default stdout logging.
+    if !matches!(&cli.command, Commands::Watch { .. }) {
+        tracing_subscriber::fmt::init();
+    }
 
     match cli.command {
         Commands::Init => cmd_init(),
-        Commands::Watch => cmd_watch(),
+        Commands::Watch { log_dir } => cmd_watch(log_dir.as_deref()),
         Commands::Ls => cmd_ls(),
         Commands::History { file } => cmd_history(&file),
         Commands::Restore { file, checksum } => cmd_restore(&file, &checksum),

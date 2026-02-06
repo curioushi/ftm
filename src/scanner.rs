@@ -80,19 +80,17 @@ impl Scanner {
                 scanned_files.insert(file_key);
 
                 match self.storage.save_snapshot(&path, &self.root_dir)? {
-                    Some(entry) => {
-                        match entry.op {
-                            Operation::Create => {
-                                info!("Scan: new file {}", entry.file);
-                                result.created += 1;
-                            }
-                            Operation::Modify => {
-                                info!("Scan: modified file {}", entry.file);
-                                result.modified += 1;
-                            }
-                            _ => {}
+                    Some(entry) => match entry.op {
+                        Operation::Create => {
+                            info!("Scan: new file {}", entry.file);
+                            result.created += 1;
                         }
-                    }
+                        Operation::Modify => {
+                            info!("Scan: modified file {}", entry.file);
+                            result.modified += 1;
+                        }
+                        _ => {}
+                    },
                     None => {
                         result.unchanged += 1;
                     }
@@ -146,7 +144,11 @@ impl Scanner {
             // If the file was not found during scan, it has been deleted
             if !scanned_files.contains(*file_key) {
                 let abs_path = self.root_dir.join(file_key);
-                if self.storage.record_delete(&abs_path, &self.root_dir)?.is_some() {
+                if self
+                    .storage
+                    .record_delete(&abs_path, &self.root_dir)?
+                    .is_some()
+                {
                     info!("Scan: deleted file {}", file_key);
                     result.deleted += 1;
                 }

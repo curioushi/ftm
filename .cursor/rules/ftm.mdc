@@ -75,7 +75,7 @@ watch:
 settings:
   max_history: 100
   scan_interval: 300
-  max_file_size: 10485760
+  max_file_size: 31457280
   web_port: 8765
 ```
 
@@ -101,6 +101,22 @@ Run tests (release build with debuginfo, single-threaded):
 ```bash
 cargo test --release -- --test-threads=1
 ```
+
+## Git Commit SOP
+
+Before committing, run all checks **sequentially** and abort if any step fails:
+
+```bash
+cargo fmt --check && cargo check && cargo test --release -- --test-threads=1
+```
+
+If `cargo fmt --check` fails, run `cargo fmt` to fix formatting, then re-run the checks.
+
+Once all checks pass:
+
+1. `git add` the relevant files (do NOT add files containing secrets)
+2. Summarize changes into a concise commit message (focus on "why", not "what")
+3. `git commit`
 
 ## Tech Stack
 

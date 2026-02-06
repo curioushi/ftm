@@ -338,7 +338,9 @@ mod ls_tests {
         assert!(
             entry_count > 0 && entry_count <= NUM_WRITES,
             "High-freq ({}ms): expected 1..={} entries, got {}",
-            INTERVAL_MS, NUM_WRITES, entry_count
+            INTERVAL_MS,
+            NUM_WRITES,
+            entry_count
         );
     }
 }
@@ -380,10 +382,7 @@ mod watch_tests {
 
         let index = load_test_index(dir.path());
         assert!(
-            !index
-                .history
-                .iter()
-                .any(|e| e.file.contains("sneaky.yaml")),
+            !index.history.iter().any(|e| e.file.contains("sneaky.yaml")),
             "Files inside .ftm/ should not be tracked"
         );
         assert!(
@@ -475,6 +474,114 @@ mod watch_tests {
         );
 
         let _ = watch.kill();
+    }
+
+    #[test]
+    fn test_watch_creates_default_log_file() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let mut watch = start_watch(dir.path());
+
+        // Write a file to ensure the watcher is running
+        std::fs::write(dir.path().join("probe.yaml"), "key: val").unwrap();
+        assert!(
+            wait_for_index(dir.path(), "probe.yaml", 1, 2000),
+            "probe.yaml should be recorded"
+        );
+
+        let _ = watch.kill();
+
+        // Verify log directory and log file exist under .ftm/log/
+        let log_dir = dir.path().join(".ftm/log");
+        assert!(log_dir.exists(), ".ftm/log/ directory should be created");
+
+        let log_files: Vec<_> = std::fs::read_dir(&log_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "log")
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(
+            log_files.len(),
+            1,
+            "Should have exactly 1 log file, found {}",
+            log_files.len()
+        );
+
+        // Verify filename format: YYYYMMDD-hhmmss.log
+        let name = log_files[0].file_name();
+        let name_str = name.to_string_lossy();
+        assert!(
+            name_str.len() == "YYYYMMDD-hhmmss.log".len(),
+            "Log filename '{}' should match YYYYMMDD-hhmmss.log length",
+            name_str
+        );
+        assert!(
+            name_str.ends_with(".log"),
+            "Log filename '{}' should end with .log",
+            name_str
+        );
+    }
+
+    #[test]
+    fn test_watch_custom_log_dir() {
+        let dir = setup_test_dir();
+        ftm().current_dir(dir.path()).arg("init").assert().success();
+
+        let custom_log_dir = dir.path().join("my-logs");
+
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
+            .current_dir(dir.path())
+            .args(["watch", "--log-dir", custom_log_dir.to_str().unwrap()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn ftm watch with --log-dir");
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Write a file to ensure the watcher is running
+        std::fs::write(dir.path().join("probe.yaml"), "key: val").unwrap();
+        assert!(
+            wait_for_index(dir.path(), "probe.yaml", 1, 2000),
+            "probe.yaml should be recorded"
+        );
+
+        let _ = child.kill();
+
+        // Verify custom log directory exists and contains a log file
+        assert!(
+            custom_log_dir.exists(),
+            "Custom log directory should be created"
+        );
+
+        let log_files: Vec<_> = std::fs::read_dir(&custom_log_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "log")
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(
+            log_files.len(),
+            1,
+            "Custom log dir should have exactly 1 log file, found {}",
+            log_files.len()
+        );
+
+        // Default log dir should NOT have been created
+        assert!(
+            !dir.path().join(".ftm/log").exists(),
+            ".ftm/log/ should not exist when --log-dir is used"
+        );
     }
 }
 
@@ -665,11 +772,7 @@ mod history_ops_tests {
             .iter()
             .filter(|e| e.file == "todelete.yaml")
             .collect();
-        assert_eq!(
-            entries.len(),
-            2,
-            "Should have 2 entries (create + delete)"
-        );
+        assert_eq!(entries.len(), 2, "Should have 2 entries (create + delete)");
         assert_eq!(entries[0].op, "create");
         assert_eq!(entries[1].op, "delete");
         assert!(
@@ -833,7 +936,10 @@ mod restore_tests {
 
         // Verify content is back to v1
         let restored = std::fs::read_to_string(&file_path).unwrap();
-        assert_eq!(restored, v1_content, "File content should be restored to v1");
+        assert_eq!(
+            restored, v1_content,
+            "File content should be restored to v1"
+        );
     }
 
     #[test]
@@ -916,10 +1022,7 @@ mod restore_tests {
 
         assert!(file_path.exists(), "File should be restored after deletion");
         let restored = std::fs::read_to_string(&file_path).unwrap();
-        assert_eq!(
-            restored, content,
-            "Restored content should match original"
-        );
+        assert_eq!(restored, content, "Restored content should match original");
 
         // Wait for the watcher to record the restored file as a new create
         // (since the previous entry was delete, the new write becomes create)
@@ -975,12 +1078,7 @@ mod restore_tests {
 
         let content = "nested: file content";
         std::fs::write(&file_path, content).unwrap();
-        assert!(wait_for_index(
-            dir.path(),
-            "nested/dir/deep.yaml",
-            1,
-            2000
-        ));
+        assert!(wait_for_index(dir.path(), "nested/dir/deep.yaml", 1, 2000));
 
         let _ = watch.kill();
 
@@ -1255,7 +1353,11 @@ mod scan_tests {
             .stdout(predicate::str::contains("1 created"));
 
         let index = load_test_index(dir.path());
-        assert_eq!(index.history.len(), 1, "Only matching file should be tracked");
+        assert_eq!(
+            index.history.len(),
+            1,
+            "Only matching file should be tracked"
+        );
         assert_eq!(index.history[0].file, "code.rs");
     }
 
@@ -1267,7 +1369,7 @@ mod scan_tests {
         // Override max_file_size to 100 bytes in config
         let config_path = dir.path().join(".ftm/config.yaml");
         let config_content = std::fs::read_to_string(&config_path).unwrap();
-        let new_config = config_content.replace("max_file_size: 10485760", "max_file_size: 100");
+        let new_config = config_content.replace("max_file_size: 31457280", "max_file_size: 100");
         std::fs::write(&config_path, new_config).unwrap();
 
         // Create a small file and a large file

@@ -46,7 +46,7 @@ impl Default for Config {
             },
             settings: Settings {
                 max_history: 100,
-                max_file_size: 10 * 1024 * 1024, // 10MB
+                max_file_size: 30 * 1024 * 1024, // 30MB
             },
         }
     }
