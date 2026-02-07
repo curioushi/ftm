@@ -99,6 +99,10 @@ fn main() -> Result<()> {
             };
             let abs_dir = abs_dir.canonicalize().unwrap_or_else(|_| abs_dir.clone());
 
+            // Kill any stale (unreachable) ftm server processes so that at
+            // most one healthy server remains.
+            kill_stale_servers(cli.port);
+
             if client::is_server_running(cli.port) {
                 // Server is alive — check what it is watching
                 if let Ok(health) = client::client_health(cli.port) {
@@ -145,6 +149,41 @@ fn main() -> Result<()> {
             ConfigAction::Set { key, value } => client::client_config_set(cli.port, &key, &value),
         },
         Commands::Logs => client::client_logs(cli.port),
+    }
+}
+
+/// Kill every ftm process except ourselves and the healthy server on `port`.
+///
+/// Strategy: ask the server on `port` for its PID via the health endpoint.
+/// Then enumerate all system processes named "ftm" via `sysinfo` and kill
+/// every one that is neither this CLI process nor the healthy server.
+fn kill_stale_servers(port: u16) {
+    use sysinfo::System;
+
+    // If a server is reachable on our port, protect its PID.
+    let healthy_pid: Option<u32> = client::client_health(port).ok().and_then(|h| h.pid);
+
+    let mut sys = System::new();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+
+    let my_pid = std::process::id();
+
+    for (pid, process) in sys.processes() {
+        let p = pid.as_u32();
+        if p == my_pid || Some(p) == healthy_pid {
+            continue;
+        }
+
+        if !process
+            .name()
+            .to_str()
+            .map_or(false, |n| n.starts_with("ftm"))
+        {
+            continue;
+        }
+
+        eprintln!("Killing stale ftm process (pid: {})", p);
+        process.kill();
     }
 }
 

@@ -316,6 +316,45 @@ mod checkout_tests {
         }
     }
 
+    /// Checkout should kill stale ftm processes while keeping the healthy server.
+    #[test]
+    fn test_checkout_kills_stale_server() {
+        if !cfg!(unix) {
+            return;
+        }
+
+        let dir = setup_test_dir();
+        let (mut server_a, port_a) = start_server();
+        let (mut server_b, _port_b) = start_server();
+
+        // Freeze server B so it becomes an unreachable stale process
+        std::process::Command::new("kill")
+            .args(["-STOP", &server_b.id().to_string()])
+            .output()
+            .unwrap();
+
+        // Checkout on port A triggers kill_stale_servers
+        ftm_client(port_a)
+            .args(["checkout", dir.path().to_str().unwrap()])
+            .assert()
+            .success();
+
+        // Server B should have been killed
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            server_b.try_wait().unwrap().is_some(),
+            "stale server B should be dead"
+        );
+
+        // Server A should still be alive
+        assert!(
+            server_a.try_wait().unwrap().is_none(),
+            "healthy server A should be alive"
+        );
+
+        stop_server(&mut server_a);
+    }
+
     #[test]
     fn test_checkout_same_dir_is_noop() {
         let dir = setup_test_dir();

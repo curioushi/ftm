@@ -67,6 +67,7 @@ struct MessageResponse {
 #[derive(Serialize)]
 struct HealthResponse {
     status: String,
+    pid: u32,
     watch_dir: Option<String>,
 }
 
@@ -148,6 +149,7 @@ async fn health(State(state): State<SharedState>) -> impl IntoResponse {
         .map(|c| c.watch_dir.to_string_lossy().to_string());
     Json(HealthResponse {
         status: "ok".into(),
+        pid: std::process::id(),
         watch_dir,
     })
 }

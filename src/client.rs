@@ -14,6 +14,7 @@ struct MessageResponse {
 pub struct HealthInfo {
     #[allow(dead_code)]
     pub status: String,
+    pub pid: Option<u32>,
     pub watch_dir: Option<String>,
 }
 
