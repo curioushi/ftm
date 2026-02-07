@@ -12,8 +12,9 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{Notify, RwLock};
-use tracing::info;
+use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
 // State
@@ -209,11 +210,74 @@ async fn checkout(
     // Start watcher in background thread
     let watch_dir = directory.clone();
     let watcher_config = config.clone();
-    let watcher_storage = Storage::new(ftm_dir, config.settings.max_history);
+    let watcher_storage = Storage::new(ftm_dir.clone(), config.settings.max_history);
     let watcher = FileWatcher::new(watch_dir.clone(), watcher_config, watcher_storage);
     watcher.watch_background();
 
     info!("Watching directory: {}", watch_dir.display());
+
+    // Spawn .ftm directory watchdog — auto-shutdown when .ftm is deleted
+    {
+        let ftm_dir = ftm_dir.clone();
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(2));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                if !ftm_dir.exists() {
+                    warn!(
+                        ".ftm directory deleted ({}), shutting down server",
+                        ftm_dir.display()
+                    );
+                    state.shutdown.notify_one();
+                    break;
+                }
+            }
+        });
+    }
+
+    // Spawn periodic scanner
+    let scan_interval = config.settings.scan_interval;
+    if scan_interval > 0 {
+        let scan_watch_dir = directory.clone();
+        let scan_config = config.clone();
+        let scan_ftm_dir = ftm_dir.clone();
+        let max_history = config.settings.max_history;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(scan_interval));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                if !scan_ftm_dir.exists() {
+                    break;
+                }
+                let wd = scan_watch_dir.clone();
+                let cfg = scan_config.clone();
+                let fd = scan_ftm_dir.clone();
+                match tokio::task::spawn_blocking(move || {
+                    let storage = Storage::new(fd, max_history);
+                    Scanner::new(wd, cfg, storage).scan()
+                })
+                .await
+                {
+                    Ok(Ok(r)) => {
+                        info!(
+                            "Periodic scan: {} created, {} modified, {} deleted, {} unchanged",
+                            r.created, r.modified, r.deleted, r.unchanged
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        warn!("Periodic scan error: {}", e);
+                    }
+                    Err(e) => {
+                        warn!("Periodic scan task panic: {}", e);
+                    }
+                }
+            }
+        });
+        info!("Periodic scanner started (interval: {}s)", scan_interval);
+    }
 
     // Store context
     {

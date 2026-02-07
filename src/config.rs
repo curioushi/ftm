@@ -15,10 +15,17 @@ pub struct Settings {
     pub max_file_size: u64,
     #[serde(default = "default_web_port")]
     pub web_port: u16,
+    /// Interval in seconds between periodic full scans. 0 = disabled.
+    #[serde(default = "default_scan_interval")]
+    pub scan_interval: u64,
 }
 
 fn default_web_port() -> u16 {
     8765
+}
+
+fn default_scan_interval() -> u64 {
+    300
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +61,7 @@ impl Default for Config {
                 max_history: 100,
                 max_file_size: 30 * 1024 * 1024, // 30MB
                 web_port: 8765,
+                scan_interval: 300,
             },
         }
     }
@@ -107,11 +115,13 @@ impl Config {
             "settings.max_history" => Ok(self.settings.max_history.to_string()),
             "settings.max_file_size" => Ok(self.settings.max_file_size.to_string()),
             "settings.web_port" => Ok(self.settings.web_port.to_string()),
+            "settings.scan_interval" => Ok(self.settings.scan_interval.to_string()),
             "watch.patterns" => Ok(self.watch.patterns.join(",")),
             "watch.exclude" => Ok(self.watch.exclude.join(",")),
             _ => anyhow::bail!(
                 "Unknown config key '{}'. Valid keys: settings.max_history, \
-                 settings.max_file_size, settings.web_port, watch.patterns, watch.exclude",
+                 settings.max_file_size, settings.web_port, settings.scan_interval, \
+                 watch.patterns, watch.exclude",
                 key
             ),
         }
@@ -135,6 +145,11 @@ impl Config {
                     .parse()
                     .map_err(|_| anyhow::anyhow!("Invalid value for web_port: {}", value))?;
             }
+            "settings.scan_interval" => {
+                self.settings.scan_interval = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid value for scan_interval: {}", value))?;
+            }
             "watch.patterns" => {
                 self.watch.patterns = value.split(',').map(|s| s.trim().to_string()).collect();
             }
@@ -143,7 +158,8 @@ impl Config {
             }
             _ => anyhow::bail!(
                 "Unknown config key '{}'. Valid keys: settings.max_history, \
-                 settings.max_file_size, settings.web_port, watch.patterns, watch.exclude",
+                 settings.max_file_size, settings.web_port, settings.scan_interval, \
+                 watch.patterns, watch.exclude",
                 key
             ),
         }

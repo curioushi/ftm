@@ -137,6 +137,57 @@ settings:
     std::fs::write(ftm_dir.join("index.json"), r#"{"history":[]}"#).unwrap();
 }
 
+/// Pre-initialize .ftm with custom settings including scan_interval.
+fn pre_init_ftm_with_scan(dir: &Path, max_history: usize, max_file_size: u64, scan_interval: u64) {
+    let ftm_dir = dir.join(".ftm");
+    std::fs::create_dir_all(&ftm_dir).unwrap();
+    let config_yaml = format!(
+        r#"watch:
+  patterns:
+  - '*.rs'
+  - '*.py'
+  - '*.md'
+  - '*.txt'
+  - '*.json'
+  - '*.yml'
+  - '*.yaml'
+  - '*.toml'
+  - '*.js'
+  - '*.ts'
+  exclude:
+  - '**/target/**'
+  - '**/node_modules/**'
+  - '**/.git/**'
+  - '**/.ftm/**'
+settings:
+  max_history: {}
+  max_file_size: {}
+  web_port: 8765
+  scan_interval: {}
+"#,
+        max_history, max_file_size, scan_interval
+    );
+    std::fs::write(ftm_dir.join("config.yaml"), config_yaml).unwrap();
+    std::fs::write(ftm_dir.join("index.json"), r#"{"history":[]}"#).unwrap();
+}
+
+/// Wait for a server child process to exit on its own, within a timeout.
+/// Returns `true` if the process exited, `false` on timeout.
+fn wait_for_server_exit(child: &mut std::process::Child, timeout: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => {}
+            Err(_) => return false,
+        }
+        if start.elapsed() > timeout {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// Minimal deserialization structs for index.json.
 #[derive(Debug, Deserialize)]
 struct TestIndex {
@@ -1935,6 +1986,113 @@ mod logs_tests {
             .assert()
             .failure()
             .stderr(predicate::str::contains("No directory checked out"));
+
+        stop_server(&mut server);
+    }
+}
+
+// ===========================================================================
+// Watchdog tests (.ftm deletion -> auto shutdown)
+// ===========================================================================
+
+mod watchdog_tests {
+    use super::*;
+
+    #[test]
+    fn test_server_stops_on_ftm_deleted() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        // Verify server is healthy
+        ftm_client(port).args(["ls"]).assert().success();
+
+        // Delete the entire .ftm directory
+        let ftm_dir = dir.path().join(".ftm");
+        assert!(ftm_dir.exists(), ".ftm should exist before deletion");
+        std::fs::remove_dir_all(&ftm_dir).unwrap();
+        assert!(!ftm_dir.exists(), ".ftm should be gone after deletion");
+
+        // The watchdog checks every 2 seconds; allow up to 10 seconds
+        let exited = wait_for_server_exit(&mut server, std::time::Duration::from_secs(10));
+        assert!(
+            exited,
+            "Server should have exited after .ftm directory was deleted"
+        );
+    }
+}
+
+// ===========================================================================
+// Periodic scan tests
+// ===========================================================================
+
+mod periodic_scan_tests {
+    use super::*;
+
+    #[test]
+    fn test_periodic_scan_detects_existing_file() {
+        let dir = setup_test_dir();
+
+        // Create a file BEFORE checkout so the watcher won't catch it;
+        // only the periodic scanner should pick it up.
+        std::fs::write(
+            dir.path().join("pre_existing.txt"),
+            "hello from before checkout",
+        )
+        .unwrap();
+
+        // Pre-init .ftm with a short scan interval (2 seconds)
+        pre_init_ftm_with_scan(dir.path(), 100, 30 * 1024 * 1024, 2);
+
+        let (mut server, _port) = start_server_and_checkout(dir.path());
+
+        // Wait for the periodic scanner to fire (interval=2s, give it up to 8s)
+        let found = wait_for_index(dir.path(), "pre_existing.txt", 1, 8000);
+        assert!(
+            found,
+            "Periodic scanner should have picked up pre_existing.txt"
+        );
+
+        // Verify the entry in index
+        let index = load_test_index(dir.path());
+        let entries: Vec<_> = index
+            .history
+            .iter()
+            .filter(|e| e.file == "pre_existing.txt")
+            .collect();
+        assert!(
+            !entries.is_empty(),
+            "Should have history for pre_existing.txt"
+        );
+        assert_eq!(entries[0].op, "create");
+
+        stop_server(&mut server);
+    }
+
+    #[test]
+    fn test_periodic_scan_disabled_when_zero() {
+        let dir = setup_test_dir();
+
+        // Create a file BEFORE checkout
+        std::fs::write(dir.path().join("should_not_scan.txt"), "no scan").unwrap();
+
+        // Pre-init with scan_interval=0 (disabled)
+        pre_init_ftm_with_scan(dir.path(), 100, 30 * 1024 * 1024, 0);
+
+        let (mut server, _port) = start_server_and_checkout(dir.path());
+
+        // Wait 4 seconds — if scanning were enabled at 0, it would have fired
+        std::thread::sleep(std::time::Duration::from_secs(4));
+
+        let index = load_test_index(dir.path());
+        let entries: Vec<_> = index
+            .history
+            .iter()
+            .filter(|e| e.file == "should_not_scan.txt")
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "With scan_interval=0, no periodic scan should run"
+        );
 
         stop_server(&mut server);
     }
