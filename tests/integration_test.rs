@@ -1129,7 +1129,7 @@ mod restore_tests {
         let (mut server, port) = start_server();
 
         ftm_client(port)
-            .args(["restore", "test.rs", "-c", "abc12345"])
+            .args(["restore", "test.rs", "abc12345"])
             .assert()
             .failure()
             .stderr(predicate::str::contains("No directory checked out"));
@@ -1143,7 +1143,7 @@ mod restore_tests {
         let (mut server, port) = start_server_and_checkout(dir.path());
 
         ftm_client(port)
-            .args(["restore", "test.rs", "-c", "abc12345"])
+            .args(["restore", "test.rs", "abc12345"])
             .assert()
             .failure()
             .stderr(predicate::str::contains("Version not found"));
@@ -1183,7 +1183,7 @@ mod restore_tests {
 
         // Restore v1 via server
         ftm_client(port)
-            .args(["restore", "roundtrip.yaml", "-c", v1_checksum])
+            .args(["restore", "roundtrip.yaml", v1_checksum])
             .assert()
             .success();
 
@@ -1222,7 +1222,7 @@ mod restore_tests {
 
         // Restore using only the first 8 chars of the checksum
         ftm_client(port)
-            .args(["restore", "prefix.yaml", "-c", short_prefix])
+            .args(["restore", "prefix.yaml", short_prefix])
             .assert()
             .success();
 
@@ -1264,7 +1264,7 @@ mod restore_tests {
 
         // Restore the deleted file via server (watcher will pick this up)
         ftm_client(port)
-            .args(["restore", "willdelete.yaml", "-c", &checksum])
+            .args(["restore", "willdelete.yaml", &checksum])
             .assert()
             .success();
 
@@ -1339,7 +1339,7 @@ mod restore_tests {
 
         // Restore should recreate parent directories automatically
         ftm_client(port)
-            .args(["restore", "nested/dir/deep.yaml", "-c", checksum])
+            .args(["restore", "nested/dir/deep.yaml", checksum])
             .assert()
             .success();
 

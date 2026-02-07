@@ -40,7 +40,6 @@ enum Commands {
     Restore {
         file: String,
         /// Checksum of the version to restore (at least first 8 chars)
-        #[arg(short, long)]
         checksum: String,
     },
     /// Get or set configuration values
