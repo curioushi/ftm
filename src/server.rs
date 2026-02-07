@@ -11,7 +11,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::Duration;
 use tokio::sync::{Notify, RwLock};
 use tracing::{info, warn};
@@ -20,9 +20,13 @@ use tracing::{info, warn};
 // State
 // ---------------------------------------------------------------------------
 
+/// Shared config wrapped in std RwLock so both async handlers and blocking
+/// threads (FileWatcher) can read/write without requiring a tokio runtime.
+type SharedConfig = Arc<StdRwLock<Config>>;
+
 struct WatchContext {
     watch_dir: PathBuf,
-    config: Config,
+    config: SharedConfig,
 }
 
 pub struct AppState {
@@ -43,7 +47,8 @@ impl AppState {
         let guard = self.ctx.read().await;
         guard.as_ref().map(|c| {
             let ftm_dir = c.watch_dir.join(".ftm");
-            let storage = Storage::new(ftm_dir, c.config.settings.max_history);
+            let max_history = c.config.read().unwrap().settings.max_history;
+            let storage = Storage::new(ftm_dir, max_history);
             (storage, c.watch_dir.clone())
         })
     }
@@ -207,11 +212,14 @@ async fn checkout(
     let config = Config::load(&ftm_dir.join("config.yaml"))
         .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    // Wrap config in Arc<StdRwLock> so all components share the same instance.
+    let shared_config: SharedConfig = Arc::new(StdRwLock::new(config));
+
     // Start watcher in background thread
     let watch_dir = directory.clone();
-    let watcher_config = config.clone();
-    let watcher_storage = Storage::new(ftm_dir.clone(), config.settings.max_history);
-    let watcher = FileWatcher::new(watch_dir.clone(), watcher_config, watcher_storage);
+    let max_history = shared_config.read().unwrap().settings.max_history;
+    let watcher_storage = Storage::new(ftm_dir.clone(), max_history);
+    let watcher = FileWatcher::new(watch_dir.clone(), shared_config.clone(), watcher_storage);
     watcher.watch_background();
 
     info!("Watching directory: {}", watch_dir.display());
@@ -237,23 +245,37 @@ async fn checkout(
         });
     }
 
-    // Spawn periodic scanner
-    let scan_interval = config.settings.scan_interval;
-    if scan_interval > 0 {
+    // Spawn periodic scanner — always started; dynamically reads scan_interval
+    // from shared config so changes via `config set` take effect immediately.
+    {
         let scan_watch_dir = directory.clone();
-        let scan_config = config.clone();
+        let scan_config = shared_config.clone();
         let scan_ftm_dir = ftm_dir.clone();
-        let max_history = config.settings.max_history;
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(scan_interval));
-            interval.tick().await; // skip immediate first tick
             loop {
-                interval.tick().await;
+                let (scan_interval, cfg_snapshot, max_history) = {
+                    let cfg = scan_config.read().unwrap();
+                    (
+                        cfg.settings.scan_interval,
+                        cfg.clone(),
+                        cfg.settings.max_history,
+                    )
+                };
+
+                if scan_interval == 0 {
+                    // Scanning disabled; re-check config periodically
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    continue;
+                }
+
+                tokio::time::sleep(Duration::from_secs(scan_interval)).await;
+
                 if !scan_ftm_dir.exists() {
                     break;
                 }
+
                 let wd = scan_watch_dir.clone();
-                let cfg = scan_config.clone();
+                let cfg = cfg_snapshot;
                 let fd = scan_ftm_dir.clone();
                 match tokio::task::spawn_blocking(move || {
                     let storage = Storage::new(fd, max_history);
@@ -276,7 +298,7 @@ async fn checkout(
                 }
             }
         });
-        info!("Periodic scanner started (interval: {}s)", scan_interval);
+        info!("Periodic scanner started");
     }
 
     // Store context
@@ -284,7 +306,7 @@ async fn checkout(
         let mut guard = state.ctx.write().await;
         *guard = Some(WatchContext {
             watch_dir: directory.clone(),
-            config,
+            config: shared_config,
         });
     }
 
@@ -345,7 +367,9 @@ async fn scan(State(state): State<SharedState>) -> Result<impl IntoResponse, Api
     let (storage, watch_dir) = state.storage().await.ok_or_else(not_checked_out)?;
     let config = {
         let guard = state.ctx.read().await;
-        guard.as_ref().unwrap().config.clone()
+        let ctx = guard.as_ref().unwrap();
+        let cfg = ctx.config.read().unwrap();
+        cfg.clone()
     };
     let scanner = Scanner::new(watch_dir, config, storage);
     let result = scanner
@@ -366,13 +390,13 @@ async fn config_get(
 ) -> Result<Json<ConfigResponse>, ApiError> {
     let guard = state.ctx.read().await;
     let ctx = guard.as_ref().ok_or_else(not_checked_out)?;
+    let cfg = ctx.config.read().unwrap();
 
     let data = if let Some(key) = q.key {
-        ctx.config
-            .get_value(&key)
+        cfg.get_value(&key)
             .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))?
     } else {
-        serde_yaml::to_string(&ctx.config)
+        serde_yaml::to_string(&*cfg)
             .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     };
 
@@ -383,21 +407,26 @@ async fn config_set(
     State(state): State<SharedState>,
     Json(req): Json<ConfigSetRequest>,
 ) -> Result<Json<MessageResponse>, ApiError> {
-    let mut guard = state.ctx.write().await;
-    let ctx = guard.as_mut().ok_or_else(not_checked_out)?;
+    let guard = state.ctx.read().await;
+    let ctx = guard.as_ref().ok_or_else(not_checked_out)?;
 
-    ctx.config
-        .set_value(&req.key, &req.value)
+    let mut cfg = ctx.config.write().unwrap();
+    cfg.set_value(&req.key, &req.value)
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     // Persist to config.yaml
     let config_path = ctx.watch_dir.join(".ftm").join("config.yaml");
-    ctx.config
-        .save(&config_path)
+    cfg.save(&config_path)
         .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    let hint = if req.key == "settings.web_port" {
+        " (web_port change requires server restart to take effect)"
+    } else {
+        ""
+    };
+
     Ok(Json(MessageResponse {
-        message: format!("Set {} = {}", req.key, req.value),
+        message: format!("Set {} = {}{}", req.key, req.value, hint),
     }))
 }
 

@@ -1911,6 +1911,263 @@ mod config_tests {
 }
 
 // ===========================================================================
+// Config hot-reload tests
+// ===========================================================================
+
+mod config_hot_reload_tests {
+    use super::*;
+
+    /// After `config set watch.patterns`, the watcher should immediately use
+    /// the new patterns — newly added extensions get tracked.
+    #[test]
+    fn test_config_set_patterns_adds_new_extension_to_watcher() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        // Default patterns do NOT include *.go
+        // Add *.go via config set
+        ftm_client(port)
+            .args(["config", "set", "watch.patterns", "*.rs,*.go,*.yaml"])
+            .assert()
+            .success();
+
+        // Write a .go file — should now be tracked
+        std::fs::write(dir.path().join("main.go"), "package main").unwrap();
+
+        assert!(
+            wait_for_index(dir.path(), "main.go", 1, 3000),
+            "After adding *.go to patterns, .go files should be tracked by the watcher"
+        );
+
+        stop_server(&mut server);
+    }
+
+    /// After `config set watch.patterns` to remove an extension, the watcher
+    /// should stop tracking files with that extension.
+    #[test]
+    fn test_config_set_patterns_removes_extension_from_watcher() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        // Verify .yaml is tracked by default
+        std::fs::write(dir.path().join("before.yaml"), "before: change").unwrap();
+        assert!(
+            wait_for_index(dir.path(), "before.yaml", 1, 2000),
+            "before.yaml should be tracked with default patterns"
+        );
+
+        // Remove *.yaml from patterns (keep only *.rs)
+        ftm_client(port)
+            .args(["config", "set", "watch.patterns", "*.rs"])
+            .assert()
+            .success();
+
+        // Write a .yaml file — should NOT be tracked anymore
+        std::fs::write(dir.path().join("after.yaml"), "after: change").unwrap();
+
+        // Write a .rs file as sync marker — should be tracked
+        std::fs::write(dir.path().join("sync.rs"), "fn sync() {}").unwrap();
+        assert!(
+            wait_for_index(dir.path(), "sync.rs", 1, 2000),
+            "sync.rs should be tracked (proves watcher is still running)"
+        );
+
+        let index = load_test_index(dir.path());
+        assert!(
+            !index.history.iter().any(|e| e.file == "after.yaml"),
+            "after.yaml should NOT be tracked after removing *.yaml from patterns"
+        );
+
+        stop_server(&mut server);
+    }
+
+    /// After `config set watch.patterns`, manual scan should use the new patterns.
+    #[test]
+    fn test_config_set_patterns_applied_to_manual_scan() {
+        let dir = setup_test_dir();
+
+        // Create a .go file BEFORE checkout (watcher won't see it)
+        std::fs::write(dir.path().join("lib.go"), "package lib").unwrap();
+
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        // Default scan should NOT pick up .go files
+        ftm_client(port)
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("0 created"));
+
+        // Add *.go to patterns
+        ftm_client(port)
+            .args(["config", "set", "watch.patterns", "*.rs,*.go"])
+            .assert()
+            .success();
+
+        // Scan again — should now find the .go file
+        ftm_client(port)
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("1 created"));
+
+        let index = load_test_index(dir.path());
+        assert!(
+            index.history.iter().any(|e| e.file == "lib.go"),
+            "lib.go should appear in history after pattern change + scan"
+        );
+
+        stop_server(&mut server);
+    }
+
+    /// After `config set settings.scan_interval` from 0 to a positive value,
+    /// the periodic scanner should start running.
+    #[test]
+    fn test_config_set_scan_interval_enables_periodic_scan() {
+        let dir = setup_test_dir();
+
+        // Create a file BEFORE checkout
+        std::fs::write(
+            dir.path().join("pre_existing.txt"),
+            "created before checkout",
+        )
+        .unwrap();
+
+        // Pre-init with scan_interval=0 (disabled)
+        pre_init_ftm_with_scan(dir.path(), 100, 30 * 1024 * 1024, 0);
+
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        // Wait a bit — no scan should have run
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let index = load_test_index(dir.path());
+        assert!(
+            !index.history.iter().any(|e| e.file == "pre_existing.txt"),
+            "With scan_interval=0, file should not be scanned"
+        );
+
+        // Enable periodic scanning with a 2-second interval
+        ftm_client(port)
+            .args(["config", "set", "settings.scan_interval", "2"])
+            .assert()
+            .success();
+
+        // Wait for the periodic scanner to fire (up to 15s: 10s poll + 2s interval + buffer)
+        let found = wait_for_index(dir.path(), "pre_existing.txt", 1, 15000);
+        assert!(
+            found,
+            "After setting scan_interval=2, periodic scanner should pick up pre_existing.txt"
+        );
+
+        stop_server(&mut server);
+    }
+
+    /// After `config set settings.max_file_size`, scan should respect the new limit.
+    #[test]
+    fn test_config_set_max_file_size_applied_to_scan() {
+        let dir = setup_test_dir();
+
+        // Create a 200-byte file BEFORE checkout
+        std::fs::write(dir.path().join("medium.txt"), "x".repeat(200)).unwrap();
+
+        // Pre-init with max_file_size=100 — file will be skipped
+        pre_init_ftm(dir.path(), 100, 100);
+
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        // Scan — file exceeds 100 bytes, should be skipped
+        ftm_client(port)
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("0 created"));
+
+        // Raise max_file_size to 1000
+        ftm_client(port)
+            .args(["config", "set", "settings.max_file_size", "1000"])
+            .assert()
+            .success();
+
+        // Scan again — file should now be picked up
+        ftm_client(port)
+            .arg("scan")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("1 created"));
+
+        let index = load_test_index(dir.path());
+        assert!(
+            index.history.iter().any(|e| e.file == "medium.txt"),
+            "medium.txt should be tracked after raising max_file_size"
+        );
+
+        stop_server(&mut server);
+    }
+
+    /// `config set settings.web_port` should include a restart hint in the response.
+    #[test]
+    fn test_config_set_web_port_shows_restart_hint() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        ftm_client(port)
+            .args(["config", "set", "settings.web_port", "9999"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("restart"));
+
+        stop_server(&mut server);
+    }
+
+    /// After `config set watch.exclude`, the watcher should respect the new
+    /// exclude patterns.
+    #[test]
+    fn test_config_set_exclude_applied_to_watcher() {
+        let dir = setup_test_dir();
+        let custom_dir = dir.path().join("custom");
+        std::fs::create_dir_all(&custom_dir).unwrap();
+
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        // Verify files in custom/ ARE tracked before exclude change
+        std::fs::write(custom_dir.join("before.yaml"), "tracked: yes").unwrap();
+        assert!(
+            wait_for_index(dir.path(), "custom/before.yaml", 1, 2000),
+            "custom/before.yaml should be tracked before exclude change"
+        );
+
+        // Add **/custom/** to exclude patterns
+        ftm_client(port)
+            .args([
+                "config",
+                "set",
+                "watch.exclude",
+                "**/target/**,**/node_modules/**,**/.git/**,**/.ftm/**,**/custom/**",
+            ])
+            .assert()
+            .success();
+
+        // Write a new file in custom/ — should NOT be tracked
+        std::fs::write(custom_dir.join("after.yaml"), "tracked: no").unwrap();
+
+        // Write a sync marker in root — should be tracked
+        std::fs::write(dir.path().join("sync.yaml"), "sync: yes").unwrap();
+        assert!(
+            wait_for_index(dir.path(), "sync.yaml", 1, 2000),
+            "sync.yaml should be tracked (proves watcher still running)"
+        );
+
+        let index = load_test_index(dir.path());
+        assert!(
+            !index.history.iter().any(|e| e.file == "custom/after.yaml"),
+            "custom/after.yaml should NOT be tracked after adding **/custom/** to exclude"
+        );
+
+        stop_server(&mut server);
+    }
+}
+
+// ===========================================================================
 // Logs tests
 // ===========================================================================
 

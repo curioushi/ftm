@@ -4,6 +4,7 @@ use anyhow::Result;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::{Arc, RwLock};
 use std::thread;
 use tracing::info;
 
@@ -14,12 +15,12 @@ enum WorkerTask {
 
 pub struct FileWatcher {
     root_dir: PathBuf,
-    config: Config,
+    config: Arc<RwLock<Config>>,
     _storage: Storage,
 }
 
 impl FileWatcher {
-    pub fn new(root_dir: PathBuf, config: Config, storage: Storage) -> Self {
+    pub fn new(root_dir: PathBuf, config: Arc<RwLock<Config>>, storage: Storage) -> Self {
         Self {
             root_dir,
             config,
@@ -28,7 +29,8 @@ impl FileWatcher {
     }
 
     fn should_watch(&self, path: &Path) -> bool {
-        self.config.matches_path(path, &self.root_dir)
+        let cfg = self.config.read().unwrap();
+        cfg.matches_path(path, &self.root_dir)
     }
 
     fn handle_event(&self, event: Event, task_tx: &mpsc::Sender<WorkerTask>) {
@@ -79,8 +81,11 @@ impl FileWatcher {
         let root_dir = self.root_dir.clone();
         let config = self.config.clone();
         thread::spawn(move || {
-            let storage = Storage::new(root_dir.join(".ftm"), config.settings.max_history);
             for task in task_rx {
+                // Read max_history from shared config on each task so changes
+                // via `config set` are picked up immediately.
+                let max_history = config.read().unwrap().settings.max_history;
+                let storage = Storage::new(root_dir.join(".ftm"), max_history);
                 match task {
                     WorkerTask::Snapshot(path) => {
                         if let Ok(Some(entry)) = storage.save_snapshot(&path, &root_dir) {
