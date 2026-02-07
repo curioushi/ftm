@@ -23,12 +23,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the FTM server (daemon mode)
-    Serve {
-        /// Custom log directory (default: .ftm/log/)
-        #[arg(long)]
-        log_dir: Option<PathBuf>,
-    },
     /// Print client and server version
     Version,
     /// Initialize .ftm in a directory and start watching
@@ -38,6 +32,8 @@ enum Commands {
     },
     /// List tracked files
     Ls,
+    /// Scan directory for changes (detect creates, modifies, deletes)
+    Scan,
     /// Show version history for a file
     History { file: String },
     /// Restore a file to a specific version
@@ -47,12 +43,16 @@ enum Commands {
         #[arg(short, long)]
         checksum: String,
     },
-    /// Scan directory for changes (detect creates, modifies, deletes)
-    Scan,
     /// Get or set configuration values
     Config {
         #[command(subcommand)]
         action: ConfigAction,
+    },
+    /// Start the FTM server (daemon mode)
+    Serve {
+        /// Custom log directory (default: .ftm/log/)
+        #[arg(long)]
+        log_dir: Option<PathBuf>,
     },
     /// Show logs (opens latest log file with less)
     Logs,
@@ -205,14 +205,14 @@ fn kill_stale_servers(port: u16) {
 /// Start a detached FTM server process in the background and wait for it to
 /// become healthy before returning.
 ///
-/// The server is started with `--log-dir {watch_dir}/.ftm/log/` so that
+/// The server is started with `--log-dir {watch_dir}/.ftm/logs/` so that
 /// tracing output is persisted to disk and accessible via `ftm logs`.
 fn auto_start_server(port: u16, watch_dir: &std::path::Path) -> Result<()> {
     use std::process::{Command, Stdio};
 
     let exe = std::env::current_exe().context("Failed to determine current executable path")?;
 
-    let log_dir = watch_dir.join(".ftm").join("log");
+    let log_dir = watch_dir.join(".ftm").join("logs");
     let mut cmd = Command::new(&exe);
     cmd.arg("--port")
         .arg(port.to_string())
@@ -260,7 +260,11 @@ fn init_file_logging(log_dir: &std::path::Path) -> Result<()> {
 
     std::fs::create_dir_all(log_dir)?;
     let now = Local::now();
-    let log_filename = now.format("%Y%m%d-%H%M%S.log").to_string();
+    let log_filename = format!(
+        "{}.{:03}.log",
+        now.format("%Y%m%d-%H%M%S"),
+        now.timestamp_subsec_millis()
+    );
     let log_file_path = log_dir.join(&log_filename);
     let log_file = std::fs::File::create(&log_file_path)?;
 

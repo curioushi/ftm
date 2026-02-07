@@ -1938,7 +1938,7 @@ mod logs_tests {
         let (mut server, port) = start_server_and_checkout(dir.path());
 
         // Manually create a log file to simulate server logging
-        let log_dir = dir.path().join(".ftm/log");
+        let log_dir = dir.path().join(".ftm/logs");
         std::fs::create_dir_all(&log_dir).unwrap();
         std::fs::write(
             log_dir.join("20260206-120000.log"),
@@ -1962,7 +1962,7 @@ mod logs_tests {
         let (mut server, port) = start_server_and_checkout(dir.path());
 
         // Create multiple log files
-        let log_dir = dir.path().join(".ftm/log");
+        let log_dir = dir.path().join(".ftm/logs");
         std::fs::create_dir_all(&log_dir).unwrap();
         std::fs::write(log_dir.join("20260101-100000.log"), "old log\n").unwrap();
         std::fs::write(log_dir.join("20260206-150000.log"), "new log\n").unwrap();

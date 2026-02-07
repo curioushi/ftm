@@ -183,7 +183,7 @@ async fn checkout(
 
     // Initialize .ftm if needed.
     // Check config.yaml (not .ftm/ dir) because --log-dir may have already
-    // created .ftm/log/ before checkout runs.
+    // created .ftm/logs/ before checkout runs.
     let ftm_dir = directory.join(".ftm");
     let config_path = ftm_dir.join("config.yaml");
     if !config_path.exists() {
@@ -405,7 +405,7 @@ async fn logs_handler(State(state): State<SharedState>) -> Result<Json<LogsRespo
     let guard = state.ctx.read().await;
     let ctx = guard.as_ref().ok_or_else(not_checked_out)?;
 
-    let log_dir = ctx.watch_dir.join(".ftm").join("log");
+    let log_dir = ctx.watch_dir.join(".ftm").join("logs");
     let log_dir_str = log_dir.to_string_lossy().to_string();
 
     if !log_dir.exists() {
