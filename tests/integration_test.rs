@@ -276,7 +276,10 @@ mod checkout_tests {
         assert!(dir.path().join(".ftm/index.json").exists());
 
         // Server should now be reachable
-        let health_resp = reqwest::blocking::Client::new()
+        let health_resp = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
             .get(format!("http://127.0.0.1:{}/api/health", port))
             .timeout(std::time::Duration::from_secs(2))
             .send();
@@ -567,6 +570,9 @@ mod ls_tests {
             "data.yaml should have at least 1 entry"
         );
 
+        // Allow pending events to settle (macOS FSEvents delivers in batches)
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
         // Parse entry count from ls output
         let ls_output = ftm_client(port)
             .arg("ls")
@@ -618,7 +624,14 @@ mod ls_tests {
     #[test]
     fn test_low_freq_writes_exact_entry_count() {
         const NUM_WRITES: usize = 50;
+        // On Linux, inotify CloseWrite fires per-close so 20ms is sufficient.
+        // On macOS, FSEvents coalesces rapid events for the same file,
+        // so we need a longer interval to guarantee each write produces
+        // a separate event.
+        #[cfg(target_os = "linux")]
         const INTERVAL_MS: u64 = 20;
+        #[cfg(not(target_os = "linux"))]
+        const INTERVAL_MS: u64 = 60;
 
         let (entry_count, _) = write_and_check(NUM_WRITES, INTERVAL_MS);
         assert_eq!(

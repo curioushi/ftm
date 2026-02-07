@@ -32,25 +32,37 @@ impl FileWatcher {
     }
 
     fn handle_event(&self, event: Event, task_tx: &mpsc::Sender<WorkerTask>) {
+        if Self::is_snapshot_trigger(&event.kind) {
+            for path in event.paths {
+                if path.is_file() && self.should_watch(&path) {
+                    let _ = task_tx.send(WorkerTask::Snapshot(path));
+                }
+            }
+        } else if matches!(event.kind, notify::EventKind::Remove(_)) {
+            for path in event.paths {
+                if self.should_watch(&path) {
+                    let _ = task_tx.send(WorkerTask::Delete(path));
+                }
+            }
+        }
+    }
+
+    /// Check if the event kind should trigger a file snapshot.
+    ///
+    /// On Linux, `inotify` provides `CloseWrite` which fires once after a
+    /// file is fully written — ideal for atomic snapshots.
+    ///
+    /// On macOS (FSEvents) and Windows, `CloseWrite` is not available.
+    /// We use `Create` and `Modify` events instead. The storage layer's
+    /// checksum-based deduplication prevents duplicate index entries.
+    fn is_snapshot_trigger(kind: &notify::EventKind) -> bool {
         use notify::event::{AccessKind, AccessMode};
         use notify::EventKind::*;
 
-        match event.kind {
-            Access(AccessKind::Close(AccessMode::Write)) => {
-                for path in event.paths {
-                    if path.is_file() && self.should_watch(&path) {
-                        let _ = task_tx.send(WorkerTask::Snapshot(path));
-                    }
-                }
-            }
-            Remove(_) => {
-                for path in event.paths {
-                    if self.should_watch(&path) {
-                        let _ = task_tx.send(WorkerTask::Delete(path));
-                    }
-                }
-            }
-            _ => {}
+        match kind {
+            Access(AccessKind::Close(AccessMode::Write)) => true,
+            Create(_) | Modify(_) => cfg!(not(target_os = "linux")),
+            _ => false,
         }
     }
 

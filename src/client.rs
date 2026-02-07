@@ -83,7 +83,10 @@ fn base_url(port: u16) -> String {
 }
 
 fn make_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::new()
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("failed to build HTTP client")
 }
 
 /// Send a request and handle connection errors with a friendly message.
