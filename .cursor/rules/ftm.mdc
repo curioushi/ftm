@@ -30,6 +30,7 @@ ftm-cli restore <file> --version <id>
 ftm-cli scan               # Manual full scan
 ftm-cli config set xxx
 ftm-cli config get xxx
+ftm-cli stop               # Stop the running server gracefully
 ftm-cli logs               # Show logs in .ftm
 
 ```

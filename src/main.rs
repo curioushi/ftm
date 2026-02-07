@@ -56,6 +56,8 @@ enum Commands {
     },
     /// Show logs (opens latest log file with less)
     Logs,
+    /// Stop the running FTM server gracefully
+    Stop,
 }
 
 #[derive(Subcommand)]
@@ -149,6 +151,19 @@ fn main() -> Result<()> {
             ConfigAction::Set { key, value } => client::client_config_set(cli.port, &key, &value),
         },
         Commands::Logs => client::client_logs(cli.port),
+        Commands::Stop => {
+            if !client::is_server_running(cli.port) {
+                println!("Server is not running on port {}.", cli.port);
+                return Ok(());
+            }
+            client::client_shutdown(cli.port)?;
+            if client::wait_for_server_shutdown(cli.port, std::time::Duration::from_secs(5)) {
+                println!("Server stopped.");
+            } else {
+                anyhow::bail!("Server did not stop within 5 seconds");
+            }
+            Ok(())
+        }
     }
 }
 
