@@ -52,6 +52,9 @@ enum Commands {
         /// Custom log directory (default: .ftm/log/)
         #[arg(long)]
         log_dir: Option<PathBuf>,
+        /// Enable the embedded Web UI
+        #[arg(long)]
+        web: bool,
     },
     /// Show logs (opens latest log file with less)
     Logs,
@@ -79,7 +82,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Serve { log_dir } => {
+        Commands::Serve { log_dir, web } => {
             // Initialize logging
             if let Some(log_dir) = log_dir {
                 init_file_logging(&log_dir)?;
@@ -89,7 +92,7 @@ fn main() -> Result<()> {
 
             // Start async server
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(server::serve(cli.port))
+            rt.block_on(server::serve(cli.port, web))
         }
         Commands::Checkout { directory } => {
             // Resolve to absolute path

@@ -4,11 +4,13 @@ use crate::storage::Storage;
 use crate::types::HistoryEntry;
 use crate::watcher::FileWatcher;
 use anyhow::{Context, Result};
+use axum::body::Body;
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock as StdRwLock};
@@ -121,6 +123,44 @@ struct LogsResponse {
     log_dir: String,
     files: Vec<String>,
 }
+
+#[derive(Deserialize)]
+struct SnapshotQuery {
+    checksum: String,
+}
+
+#[derive(Deserialize)]
+struct DiffQuery {
+    /// Checksum of the "old" version. Empty or absent means diff against empty.
+    from: Option<String>,
+    /// Checksum of the "new" version.
+    to: String,
+}
+
+#[derive(Serialize)]
+struct DiffResponse {
+    hunks: Vec<DiffHunk>,
+    old_total: usize,
+    new_total: usize,
+}
+
+#[derive(Serialize)]
+struct DiffHunk {
+    old_start: usize,
+    new_start: usize,
+    lines: Vec<DiffLine>,
+}
+
+#[derive(Serialize)]
+struct DiffLine {
+    /// "equal", "insert", or "delete"
+    tag: &'static str,
+    content: String,
+}
+
+#[derive(Embed)]
+#[folder = "frontend/"]
+struct FrontendAssets;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -355,6 +395,142 @@ async fn restore(
     }))
 }
 
+async fn snapshot_handler(
+    State(state): State<SharedState>,
+    Query(q): Query<SnapshotQuery>,
+) -> Result<Response, ApiError> {
+    let (storage, _) = state.storage().await.ok_or_else(not_checked_out)?;
+    let content = storage
+        .read_snapshot(&q.checksum)
+        .map_err(|e| api_err(StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Response::builder()
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Body::from(content))
+        .unwrap())
+}
+
+async fn diff_handler(
+    State(state): State<SharedState>,
+    Query(q): Query<DiffQuery>,
+) -> Result<Json<DiffResponse>, ApiError> {
+    let (storage, _) = state.storage().await.ok_or_else(not_checked_out)?;
+
+    let old_text = if let Some(ref from) = q.from {
+        if from.is_empty() {
+            String::new()
+        } else {
+            let bytes = storage
+                .read_snapshot(from)
+                .map_err(|e| api_err(StatusCode::NOT_FOUND, e.to_string()))?;
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+    } else {
+        String::new()
+    };
+
+    let new_bytes = storage
+        .read_snapshot(&q.to)
+        .map_err(|e| api_err(StatusCode::NOT_FOUND, e.to_string()))?;
+    let new_text = String::from_utf8_lossy(&new_bytes).into_owned();
+
+    let diff = similar::TextDiff::from_lines(&old_text, &new_text);
+
+    let old_total = old_text.lines().count();
+    let new_total = new_text.lines().count();
+
+    // Build hunks with context collapsing: show up to CONTEXT_LINES around
+    // each change and collapse longer equal runs.
+    const CONTEXT_LINES: usize = 3;
+
+    let all_changes: Vec<_> = diff.iter_all_changes().collect();
+
+    // Assign line numbers to every change entry.
+    struct Numbered {
+        tag: similar::ChangeTag,
+        value: String,
+        old_line: usize,
+        new_line: usize,
+    }
+
+    let mut numbered: Vec<Numbered> = Vec::with_capacity(all_changes.len());
+    let mut old_line: usize = 1;
+    let mut new_line: usize = 1;
+    for c in &all_changes {
+        let ol = old_line;
+        let nl = new_line;
+        match c.tag() {
+            similar::ChangeTag::Equal => {
+                old_line += 1;
+                new_line += 1;
+            }
+            similar::ChangeTag::Delete => {
+                old_line += 1;
+            }
+            similar::ChangeTag::Insert => {
+                new_line += 1;
+            }
+        }
+        numbered.push(Numbered {
+            tag: c.tag(),
+            value: c.value().to_string(),
+            old_line: ol,
+            new_line: nl,
+        });
+    }
+
+    // Mark which indices are "interesting" (within CONTEXT_LINES of a change).
+    let len = numbered.len();
+    let mut visible = vec![false; len];
+    for (i, n) in numbered.iter().enumerate() {
+        if n.tag != similar::ChangeTag::Equal {
+            let lo = i.saturating_sub(CONTEXT_LINES);
+            let hi = (i + CONTEXT_LINES + 1).min(len);
+            for v in &mut visible[lo..hi] {
+                *v = true;
+            }
+        }
+    }
+
+    // Build hunks by grouping consecutive visible runs.
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    let mut i = 0;
+    while i < len {
+        if !visible[i] {
+            i += 1;
+            continue;
+        }
+        // Start a new hunk
+        let mut lines: Vec<DiffLine> = Vec::new();
+        let hunk_old_start = numbered[i].old_line;
+        let hunk_new_start = numbered[i].new_line;
+        while i < len && visible[i] {
+            let n = &numbered[i];
+            let tag = match n.tag {
+                similar::ChangeTag::Equal => "equal",
+                similar::ChangeTag::Delete => "delete",
+                similar::ChangeTag::Insert => "insert",
+            };
+            let content = n.value.strip_suffix('\n').unwrap_or(&n.value);
+            lines.push(DiffLine {
+                tag,
+                content: content.to_string(),
+            });
+            i += 1;
+        }
+        hunks.push(DiffHunk {
+            old_start: hunk_old_start,
+            new_start: hunk_new_start,
+            lines,
+        });
+    }
+
+    Ok(Json(DiffResponse {
+        hunks,
+        old_total,
+        new_total,
+    }))
+}
+
 async fn shutdown_handler(State(state): State<SharedState>) -> Json<MessageResponse> {
     info!("Shutdown requested via API");
     state.shutdown.notify_one();
@@ -471,11 +647,43 @@ async fn logs_handler(State(state): State<SharedState>) -> Result<Json<LogsRespo
 // Server startup
 // ---------------------------------------------------------------------------
 
-pub async fn serve(port: u16) -> Result<()> {
+/// Serve an embedded frontend asset or fall back to index.html.
+async fn static_handler(uri: axum::http::Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    // Try exact file first, then fall back to index.html
+    let path = if path.is_empty() { "index.html" } else { path };
+
+    match FrontendAssets::get(path) {
+        Some(file) => {
+            let mime = mime_guess::from_path(path)
+                .first_or_octet_stream()
+                .to_string();
+            Response::builder()
+                .header(header::CONTENT_TYPE, mime)
+                .body(Body::from(file.data.to_vec()))
+                .unwrap()
+        }
+        None => {
+            // SPA fallback
+            match FrontendAssets::get("index.html") {
+                Some(file) => Response::builder()
+                    .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                    .body(Body::from(file.data.to_vec()))
+                    .unwrap(),
+                None => Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::from("Not Found"))
+                    .unwrap(),
+            }
+        }
+    }
+}
+
+pub async fn serve(port: u16, web: bool) -> Result<()> {
     let state = Arc::new(AppState::new());
     let shutdown_state = state.clone();
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/api/health", get(health))
         .route("/api/version", get(version_handler))
         .route("/api/checkout", post(checkout))
@@ -485,8 +693,15 @@ pub async fn serve(port: u16) -> Result<()> {
         .route("/api/scan", post(scan))
         .route("/api/config", get(config_get).post(config_set))
         .route("/api/logs", get(logs_handler))
+        .route("/api/snapshot", get(snapshot_handler))
+        .route("/api/diff", get(diff_handler))
         .route("/api/shutdown", post(shutdown_handler))
         .with_state(state);
+
+    if web {
+        app = app.fallback(static_handler);
+        info!("Web UI enabled");
+    }
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
