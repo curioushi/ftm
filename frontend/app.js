@@ -53,9 +53,27 @@
   }
 
   // ---- File list -----------------------------------------------------------
+
+  // The /api/files endpoint returns a tree of FileTreeNode:
+  //   { name, count?, children? }
+  // Flatten it into [{path, count}] for the UI.
+  function flattenTree(nodes, prefix) {
+    const result = [];
+    for (const node of nodes) {
+      const fullPath = prefix ? prefix + "/" + node.name : node.name;
+      if (node.children) {
+        result.push(...flattenTree(node.children, fullPath));
+      } else {
+        result.push({ path: fullPath, count: node.count || 0 });
+      }
+    }
+    return result;
+  }
+
   async function loadFiles() {
     try {
-      allFiles = await apiJson("/api/files");
+      const tree = await apiJson("/api/files");
+      allFiles = flattenTree(tree, "");
       renderFileList();
     } catch (e) {
       $status.textContent = e.message;

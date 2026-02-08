@@ -847,7 +847,10 @@ mod watcher_tests {
             "sub/deep/foo.rs should be recorded with relative path"
         );
 
-        let ls_output = ftm_client(port).arg("ls").output().expect("failed to run ftm ls");
+        let ls_output = ftm_client(port)
+            .arg("ls")
+            .output()
+            .expect("failed to run ftm ls");
         assert!(ls_output.status.success(), "ls should succeed");
         let ls_stdout = String::from_utf8_lossy(&ls_output.stdout);
         assert!(
@@ -2206,12 +2209,13 @@ mod logs_tests {
         let dir = setup_test_dir();
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        // No log dir created yet, should report no log files
+        // The server auto-creates a log file on startup, so "logs" should
+        // find it and print "Opening: ..." instead of "No log files".
         ftm_client(port)
             .arg("logs")
             .assert()
             .success()
-            .stdout(predicate::str::contains("No log files"));
+            .stdout(predicate::str::contains("Opening:"));
 
         stop_server(&mut server);
     }
@@ -2221,11 +2225,12 @@ mod logs_tests {
         let dir = setup_test_dir();
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        // Manually create a log file to simulate server logging
+        // Create a log file with a far-future timestamp so it is picked as
+        // the newest (the server auto-creates its own log on startup).
         let log_dir = dir.path().join(".ftm/logs");
         std::fs::create_dir_all(&log_dir).unwrap();
         std::fs::write(
-            log_dir.join("20260206-120000.log"),
+            log_dir.join("30000101-120000.log"),
             "INFO test log line 1\nINFO test log line 2\n",
         )
         .unwrap();
@@ -2235,7 +2240,7 @@ mod logs_tests {
             .arg("logs")
             .assert()
             .success()
-            .stdout(predicate::str::contains("20260206-120000.log"));
+            .stdout(predicate::str::contains("30000101-120000.log"));
 
         stop_server(&mut server);
     }
@@ -2245,18 +2250,19 @@ mod logs_tests {
         let dir = setup_test_dir();
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        // Create multiple log files
+        // Create multiple log files with far-future timestamps so both are
+        // newer than the server's auto-created log file.
         let log_dir = dir.path().join(".ftm/logs");
         std::fs::create_dir_all(&log_dir).unwrap();
-        std::fs::write(log_dir.join("20260101-100000.log"), "old log\n").unwrap();
-        std::fs::write(log_dir.join("20260206-150000.log"), "new log\n").unwrap();
+        std::fs::write(log_dir.join("30000101-100000.log"), "old log\n").unwrap();
+        std::fs::write(log_dir.join("30000201-150000.log"), "new log\n").unwrap();
 
-        // Should pick the newest one (20260206-150000.log)
+        // Should pick the newest one (30000201-150000.log)
         ftm_client(port)
             .arg("logs")
             .assert()
             .success()
-            .stdout(predicate::str::contains("20260206-150000.log"));
+            .stdout(predicate::str::contains("30000201-150000.log"));
 
         stop_server(&mut server);
     }

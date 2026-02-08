@@ -18,7 +18,7 @@ Cross-platform text file version tracking tool. Monitors file changes, creates s
 
 ```
 # Server
-ftm-cli serve --web        # Start daemon, optinally with web UI
+ftm-cli serve              # Start daemon (Web UI always enabled)
                            # Can only watch one directory at a time
 
 # Client

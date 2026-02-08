@@ -294,11 +294,7 @@ impl Storage {
         Ok(Self::build_nodes_to_tree(root))
     }
 
-    fn insert_path(
-        root: &mut BTreeMap<String, BuildNode>,
-        segments: &[String],
-        count: usize,
-    ) {
+    fn insert_path(root: &mut BTreeMap<String, BuildNode>, segments: &[String], count: usize) {
         if segments.len() == 1 {
             root.insert(segments[0].clone(), BuildNode::File(count));
             return;

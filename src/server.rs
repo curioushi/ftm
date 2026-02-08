@@ -669,11 +669,11 @@ async fn static_handler(uri: axum::http::Uri) -> Response {
     }
 }
 
-pub async fn serve(port: u16, web: bool) -> Result<()> {
+pub async fn serve(port: u16) -> Result<()> {
     let state = Arc::new(AppState::new());
     let shutdown_state = state.clone();
 
-    let mut app = Router::new()
+    let app = Router::new()
         .route("/api/health", get(health))
         .route("/api/version", get(version_handler))
         .route("/api/checkout", post(checkout))
@@ -686,12 +686,8 @@ pub async fn serve(port: u16, web: bool) -> Result<()> {
         .route("/api/snapshot", get(snapshot_handler))
         .route("/api/diff", get(diff_handler))
         .route("/api/shutdown", post(shutdown_handler))
+        .fallback(static_handler)
         .with_state(state);
-
-    if web {
-        app = app.fallback(static_handler);
-        info!("Web UI enabled");
-    }
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
