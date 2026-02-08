@@ -1,13 +1,19 @@
-use crate::types::{HistoryEntry, Index, Operation};
+use crate::types::{FileTreeNode, HistoryEntry, Index, Operation};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub struct Storage {
     ftm_dir: PathBuf,
     max_history: usize,
+}
+
+enum BuildNode {
+    File(usize),
+    Dir(BTreeMap<String, BuildNode>),
 }
 
 impl Storage {
@@ -246,6 +252,74 @@ impl Storage {
         let mut files: Vec<(String, usize)> = file_counts.into_iter().collect();
         files.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(files)
+    }
+
+    /// Path segments from a path string using platform-agnostic Path::components().
+    fn path_segments(path_str: &str) -> Vec<String> {
+        Path::new(path_str)
+            .components()
+            .filter_map(|c| match c {
+                Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn list_files_tree(&self) -> Result<Vec<FileTreeNode>> {
+        let flat = self.list_files()?;
+        let mut root: BTreeMap<String, BuildNode> = BTreeMap::new();
+        for (path_str, count) in flat {
+            let segments = Self::path_segments(&path_str);
+            if segments.is_empty() {
+                continue;
+            }
+            Self::insert_path(&mut root, &segments, count);
+        }
+        Ok(Self::build_nodes_to_tree(root))
+    }
+
+    fn insert_path(
+        root: &mut BTreeMap<String, BuildNode>,
+        segments: &[String],
+        count: usize,
+    ) {
+        if segments.len() == 1 {
+            root.insert(segments[0].clone(), BuildNode::File(count));
+            return;
+        }
+        let (name, rest) = (&segments[0], &segments[1..]);
+        let entry = root
+            .entry(name.clone())
+            .or_insert_with(|| BuildNode::Dir(BTreeMap::new()));
+        match entry {
+            BuildNode::File(_) => {
+                *entry = BuildNode::Dir(BTreeMap::new());
+                if let BuildNode::Dir(ref mut map) = entry {
+                    Self::insert_path(map, rest, count);
+                }
+            }
+            BuildNode::Dir(ref mut map) => {
+                Self::insert_path(map, rest, count);
+            }
+        }
+    }
+
+    fn build_nodes_to_tree(nodes: BTreeMap<String, BuildNode>) -> Vec<FileTreeNode> {
+        nodes
+            .into_iter()
+            .map(|(name, n)| match n {
+                BuildNode::File(c) => FileTreeNode {
+                    name,
+                    count: Some(c),
+                    children: None,
+                },
+                BuildNode::Dir(map) => FileTreeNode {
+                    name,
+                    count: None,
+                    children: Some(Self::build_nodes_to_tree(map)),
+                },
+            })
+            .collect()
     }
 
     pub fn restore(&self, file_path: &str, checksum_prefix: &str, root_dir: &Path) -> Result<()> {

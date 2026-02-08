@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::scanner::Scanner;
 use crate::storage::Storage;
-use crate::types::HistoryEntry;
+use crate::types::{FileTreeNode, HistoryEntry};
 use crate::watcher::FileWatcher;
 use anyhow::{Context, Result};
 use axum::extract::{Query, State};
@@ -75,12 +75,6 @@ struct HealthResponse {
     status: String,
     pid: u32,
     watch_dir: Option<String>,
-}
-
-#[derive(Serialize)]
-struct FileEntry {
-    path: String,
-    count: usize,
 }
 
 #[derive(Deserialize)]
@@ -315,16 +309,12 @@ async fn checkout(
     }))
 }
 
-async fn files(State(state): State<SharedState>) -> Result<Json<Vec<FileEntry>>, ApiError> {
+async fn files(State(state): State<SharedState>) -> Result<Json<Vec<FileTreeNode>>, ApiError> {
     let (storage, _) = state.storage().await.ok_or_else(not_checked_out)?;
-    let file_list = storage
-        .list_files()
+    let tree = storage
+        .list_files_tree()
         .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let entries: Vec<FileEntry> = file_list
-        .into_iter()
-        .map(|(path, count)| FileEntry { path, count })
-        .collect();
-    Ok(Json(entries))
+    Ok(Json(tree))
 }
 
 async fn history(

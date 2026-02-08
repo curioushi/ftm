@@ -19,9 +19,10 @@ pub struct HealthInfo {
 }
 
 #[derive(Deserialize)]
-pub struct FileEntry {
-    pub path: String,
-    pub count: usize,
+pub struct FileTreeNode {
+    pub name: String,
+    pub count: Option<usize>,
+    pub children: Option<Vec<FileTreeNode>>,
 }
 
 #[derive(Deserialize)]
@@ -190,17 +191,43 @@ pub fn client_ls(port: u16) -> Result<()> {
         .send()
         .map_err(handle_connection_error)?;
     let resp = check_response(resp)?;
-    let files: Vec<FileEntry> = resp.json().context("Failed to parse response")?;
+    let tree: Vec<FileTreeNode> = resp.json().context("Failed to parse response")?;
 
-    if files.is_empty() {
+    if tree.is_empty() {
         println!("No files tracked yet.");
     } else {
         println!("Tracked files:");
-        for f in &files {
-            println!("  {} ({} entries)", f.path, f.count);
-        }
+        print_file_tree(&tree, "");
     }
     Ok(())
+}
+
+fn print_file_tree(nodes: &[FileTreeNode], prefix: &str) {
+    let n = nodes.len();
+    for (i, node) in nodes.iter().enumerate() {
+        let is_last = i == n - 1;
+        let (branch, next_prefix) = if is_last {
+            ("└── ", "    ")
+        } else {
+            ("├── ", "│   ")
+        };
+        let line_prefix = if prefix.is_empty() {
+            branch.to_string()
+        } else {
+            format!("{}{}", prefix, branch)
+        };
+        match &node.children {
+            None => {
+                let count = node.count.unwrap_or(0);
+                println!("{}{} ({} entries)", line_prefix, node.name, count);
+            }
+            Some(children) => {
+                println!("{}{}/", line_prefix, node.name);
+                let new_prefix = format!("{}{}", prefix, next_prefix);
+                print_file_tree(children, &new_prefix);
+            }
+        }
+    }
 }
 
 pub fn client_history(port: u16, file: &str) -> Result<()> {

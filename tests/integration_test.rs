@@ -679,11 +679,11 @@ mod ls_tests {
             .lines()
             .find(|l| l.contains("data.yaml"))
             .and_then(|l| {
-                l.trim()
-                    .strip_prefix("data.yaml (")?
-                    .strip_suffix(" entries)")?
-                    .parse()
-                    .ok()
+                let needle = "data.yaml (";
+                let start = l.find(needle)?;
+                let after = &l[start + needle.len()..];
+                let end = after.find(" entries)")?;
+                after[..end].parse().ok()
             })
             .expect("failed to parse entry count from ls output");
 
@@ -823,11 +823,14 @@ mod watcher_tests {
             "sub/deep/foo.rs should be recorded with relative path"
         );
 
-        ftm_client(port)
-            .arg("ls")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("sub/deep/foo.rs"));
+        let ls_output = ftm_client(port).arg("ls").output().expect("failed to run ftm ls");
+        assert!(ls_output.status.success(), "ls should succeed");
+        let ls_stdout = String::from_utf8_lossy(&ls_output.stdout);
+        assert!(
+            ls_stdout.contains("foo.rs") && ls_stdout.contains("sub") && ls_stdout.contains("deep"),
+            "ls should show sub/deep/foo.rs (tree format); got:\n{}",
+            ls_stdout
+        );
 
         stop_server(&mut server);
     }

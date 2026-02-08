@@ -34,3 +34,13 @@ pub struct HistoryEntry {
 pub struct Index {
     pub history: Vec<HistoryEntry>,
 }
+
+/// Tree node for structured file listing (ls). Directories have children; files have count.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileTreeNode {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub children: Option<Vec<FileTreeNode>>,
+}
