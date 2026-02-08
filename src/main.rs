@@ -47,7 +47,8 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
-    /// Start the FTM server (daemon mode)
+    /// Start the FTM server (daemon mode, internal use only)
+    #[command(hide = true)]
     Serve {
         /// Custom log directory (default: .ftm/log/)
         #[arg(long)]
@@ -100,43 +101,23 @@ fn main() -> Result<()> {
             };
             let abs_dir = abs_dir.canonicalize().unwrap_or_else(|_| abs_dir.clone());
 
-            // Kill any stale (unreachable) ftm server processes so that at
-            // most one healthy server remains.
-            kill_stale_servers(cli.port);
-
+            // If a server is already watching the exact same directory, keep it
+            // but still kill every other ftm process to guarantee a single server.
             if client::is_server_running(cli.port) {
-                // Server is alive — check what it is watching
                 if let Ok(health) = client::client_health(cli.port) {
-                    if let Some(ref old_dir) = health.watch_dir {
-                        let old_path = PathBuf::from(old_dir);
-                        if old_path == abs_dir {
-                            // Same directory — nothing to do
+                    if let Some(ref watch_dir) = health.watch_dir {
+                        if PathBuf::from(watch_dir) == abs_dir {
+                            kill_all_servers(health.pid);
                             println!("Already watching: {}", abs_dir.display());
                             return Ok(());
                         }
-                        // Different directory — switch
-                        eprintln!(
-                            "Switching watch directory: {} -> {}",
-                            old_dir,
-                            abs_dir.display()
-                        );
-                        let _ = client::client_shutdown(cli.port);
-                        if !client::wait_for_server_shutdown(
-                            cli.port,
-                            std::time::Duration::from_secs(2),
-                        ) {
-                            anyhow::bail!("Server did not stop within 2 seconds");
-                        }
-                        // Start a fresh server for the new directory
-                        auto_start_server(cli.port, &abs_dir)?;
                     }
-                    // else: server running, not watching anything — just checkout below
                 }
-                // else: health call failed — try checkout anyway
-            } else {
-                // Server not running — auto-start
-                auto_start_server(cli.port, &abs_dir)?;
             }
+
+            // Kill all ftm server processes, then start a fresh one.
+            kill_all_servers(None);
+            auto_start_server(cli.port, &abs_dir)?;
 
             client::client_checkout(cli.port, &abs_dir.to_string_lossy())
         }
@@ -166,16 +147,9 @@ fn main() -> Result<()> {
     }
 }
 
-/// Kill every ftm process except ourselves and the healthy server on `port`.
-///
-/// Strategy: ask the server on `port` for its PID via the health endpoint.
-/// Then enumerate all system processes named "ftm" via `sysinfo` and kill
-/// every one that is neither this CLI process nor the healthy server.
-fn kill_stale_servers(port: u16) {
+/// Kill every ftm process except ourselves and an optional `keep_pid`.
+fn kill_all_servers(keep_pid: Option<u32>) {
     use sysinfo::System;
-
-    // If a server is reachable on our port, protect its PID.
-    let healthy_pid: Option<u32> = client::client_health(port).ok().and_then(|h| h.pid);
 
     let mut sys = System::new();
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
@@ -184,7 +158,7 @@ fn kill_stale_servers(port: u16) {
 
     for (pid, process) in sys.processes() {
         let p = pid.as_u32();
-        if p == my_pid || Some(p) == healthy_pid {
+        if p == my_pid || Some(p) == keep_pid {
             continue;
         }
 
@@ -196,7 +170,7 @@ fn kill_stale_servers(port: u16) {
             continue;
         }
 
-        eprintln!("Killing stale ftm process (pid: {})", p);
+        eprintln!("Killing ftm process (pid: {})", p);
         process.kill();
     }
 }

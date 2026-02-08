@@ -367,15 +367,15 @@ mod checkout_tests {
         }
     }
 
-    /// Checkout should kill stale ftm processes while keeping the healthy server.
+    /// Checkout should kill all ftm processes (including healthy ones) and start fresh.
     #[test]
-    fn test_checkout_kills_stale_server() {
+    fn test_checkout_kills_all_servers() {
         if !cfg!(unix) {
             return;
         }
 
         let dir = setup_test_dir();
-        let (mut server_a, port_a) = start_server();
+        let (mut server_a, _port_a) = start_server();
         let (mut server_b, _port_b) = start_server();
 
         // Freeze server B so it becomes an unreachable stale process
@@ -384,26 +384,55 @@ mod checkout_tests {
             .output()
             .unwrap();
 
-        // Checkout on port A triggers kill_stale_servers
-        ftm_client(port_a)
-            .args(["checkout", dir.path().to_str().unwrap()])
-            .assert()
-            .success();
+        // Use a fresh random port for checkout
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
 
-        // Server B should have been killed
+        // Checkout triggers kill_all_servers — both A and B should be killed
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
+            .args([
+                "--port",
+                &port.to_string(),
+                "checkout",
+                dir.path().to_str().unwrap(),
+            ])
+            .output()
+            .expect("failed to run ftm checkout");
+        assert!(
+            output.status.success(),
+            "checkout should succeed: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+
+        // Both servers should have been killed
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert!(
             server_b.try_wait().unwrap().is_some(),
             "stale server B should be dead"
         );
-
-        // Server A should still be alive
         assert!(
-            server_a.try_wait().unwrap().is_none(),
-            "healthy server A should be alive"
+            server_a.try_wait().unwrap().is_some(),
+            "server A should also be dead (kill_all_servers kills everything)"
         );
 
-        stop_server(&mut server_a);
+        // Clean up: kill the auto-started server
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let server_pid: Option<u32> = stderr.lines().find(|l| l.contains("pid:")).and_then(|l| {
+            l.split("pid: ")
+                .nth(1)?
+                .trim_end_matches(|c: char| !c.is_ascii_digit())
+                .parse()
+                .ok()
+        });
+        if let Some(pid) = server_pid {
+            std::process::Command::new("kill")
+                .arg(pid.to_string())
+                .output()
+                .ok();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
 
     #[test]
@@ -481,11 +510,6 @@ mod checkout_tests {
             "Switch checkout should succeed: stdout={}, stderr={}",
             stdout_b,
             stderr_b,
-        );
-        assert!(
-            stderr_b.contains("Switching"),
-            "Expected 'Switching' message in stderr, got: {}",
-            stderr_b
         );
         assert!(
             stdout_b.contains("Checked out and watching"),

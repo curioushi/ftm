@@ -14,6 +14,7 @@ struct MessageResponse {
 pub struct HealthInfo {
     #[allow(dead_code)]
     pub status: String,
+    #[allow(dead_code)]
     pub pid: Option<u32>,
     pub watch_dir: Option<String>,
 }
@@ -94,7 +95,7 @@ fn make_client() -> reqwest::blocking::Client {
 /// Send a request and handle connection errors with a friendly message.
 fn handle_connection_error(err: reqwest::Error) -> anyhow::Error {
     if err.is_connect() {
-        anyhow::anyhow!("Server not running. Start with 'ftm serve'")
+        anyhow::anyhow!("Server not running. Use 'ftm checkout <dir>' to start.")
     } else {
         err.into()
     }
