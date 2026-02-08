@@ -79,7 +79,7 @@ settings:
   web_port: 8765
 ```
 
-## Web UI Layout
+## Web UI Layout (Sketch)
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -91,7 +91,7 @@ settings:
 │ [-1d] ──|──|──|──|────────────────────── [Current]  │
 │        Timeline (color-coded event markers)         │
 └─────────────────────────────────────────────────────┘
-Event colors: Create=green, Modify=blue, Delete=red, Rename=purple
+Event colors: Create=green, Modify=blue, Delete=red
 ```
 
 ## Testing

@@ -228,6 +228,22 @@ impl Storage {
         }
     }
 
+    /// Read the raw bytes of a snapshot by its full checksum.
+    pub fn read_snapshot(&self, checksum: &str) -> Result<Vec<u8>> {
+        let path = self.snapshot_path(checksum);
+        if !path.exists() {
+            anyhow::bail!("Snapshot not found: {}", &checksum[..8.min(checksum.len())]);
+        }
+        let content = std::fs::read(&path)?;
+        Ok(content)
+    }
+
+    /// Check whether a snapshot file exists for the given checksum.
+    #[allow(dead_code)]
+    pub fn snapshot_exists(&self, checksum: &str) -> bool {
+        self.snapshot_path(checksum).exists()
+    }
+
     pub fn list_history(&self, file_path: &str) -> Result<Vec<HistoryEntry>> {
         let index = self.load_index()?;
         let entries: Vec<HistoryEntry> = index
