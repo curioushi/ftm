@@ -681,7 +681,6 @@
   function drawDateSeparators(w, h) {
     if (tlViewEnd <= tlViewStart) return;
     const MS_PER_DAY = 86400 * 1000;
-    const startDay = new Date(tlViewStart);
     let midnight = getMidnightLocal(tlViewStart);
     if (midnight <= tlViewStart) midnight += MS_PER_DAY;
 
@@ -871,7 +870,6 @@
     // Draw the active node on top so it is never covered by others
     if (tlActiveNode) {
       const li = tlActiveNode.laneIdx;
-      const lane = tlLanes[li];
       const laneY = lanesAreaTop + li * LANE_HEIGHT - tlScrollY;
       if (laneY + LANE_HEIGHT >= lanesAreaTop && laneY <= h) {
         const centerY = laneY + LANE_HEIGHT / 2;
@@ -881,7 +879,9 @@
         if (x >= -NODE_RADIUS * 2 && x <= w + NODE_RADIUS * 2) {
           const color = opColor(entry.op);
           const isHovered =
-            tlHoveredNode && tlHoveredNode.laneIdx === li && tlHoveredNode.entryIdx === tlActiveNode.entryIdx;
+            tlHoveredNode &&
+            tlHoveredNode.laneIdx === li &&
+            tlHoveredNode.entryIdx === tlActiveNode.entryIdx;
 
           ctx.beginPath();
           ctx.arc(x, centerY, isHovered ? NODE_RADIUS + 1.5 : NODE_RADIUS, 0, Math.PI * 2);

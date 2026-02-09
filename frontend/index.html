@@ -10,17 +10,7 @@
     <div id="app">
       <header id="toolbar">
         <div class="toolbar-left">
-          <span class="logo">FTM</span>
-          <input
-            id="filter"
-            type="text"
-            placeholder="Filter files..."
-            autocomplete="off"
-            spellcheck="false"
-          />
-          <label class="toolbar-checkbox"
-            ><input type="checkbox" id="hide-deleted" checked /> Hide deleted files</label
-          >
+          <span class="logo">FTM - File Time Machine</span>
         </div>
         <div class="toolbar-right">
           <button id="btn-scan" title="Scan for changes">Scan</button>
@@ -41,6 +31,18 @@
               <button class="tree-depth-btn" data-action="depth-3" title="Expand depth 3">3</button>
               <button class="tree-depth-btn" data-action="expand-all" title="Expand all">+</button>
             </div>
+          </div>
+          <div id="sidebar-filter">
+            <input
+              id="filter"
+              type="text"
+              placeholder="Filter files..."
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <label class="sidebar-checkbox"
+              ><input type="checkbox" id="hide-deleted" checked /> Hide deleted files</label
+            >
           </div>
           <div id="file-list"></div>
         </aside>
