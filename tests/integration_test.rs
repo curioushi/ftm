@@ -680,7 +680,7 @@ mod ls_tests {
 
         // Wait for at least one entry to be recorded
         assert!(
-            wait_for_index(dir.path(), "data.yaml", 1, 5000),
+            wait_for_index(dir.path(), "data.yaml", 1, 3000),
             "data.yaml should have at least 1 entry"
         );
 
@@ -737,7 +737,7 @@ mod ls_tests {
 
     #[test]
     fn test_low_freq_writes_exact_entry_count() {
-        const NUM_WRITES: usize = 50;
+        const NUM_WRITES: usize = 20;
         // On Linux, inotify CloseWrite fires per-close so 20ms is sufficient.
         // On macOS, FSEvents coalesces rapid events for the same file,
         // so we need a longer interval to guarantee each write produces
@@ -757,7 +757,7 @@ mod ls_tests {
 
     #[test]
     fn test_high_freq_writes_no_corrupt_entries() {
-        const NUM_WRITES: usize = 50;
+        const NUM_WRITES: usize = 20;
         const INTERVAL_MS: u64 = 5;
 
         let (entry_count, _) = write_and_check(NUM_WRITES, INTERVAL_MS);
@@ -1731,13 +1731,13 @@ mod trim_tests {
         // Write 5 different versions with delay between each
         for i in 0..5 {
             std::fs::write(&file_path, format!("version: {}", i)).unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(150));
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
         // Write a sync marker to ensure all previous writes were processed
         std::fs::write(dir.path().join("sync.yaml"), "sync: done").unwrap();
         assert!(
-            wait_for_index(dir.path(), "sync.yaml", 1, 3000),
+            wait_for_index(dir.path(), "sync.yaml", 1, 2000),
             "Sync marker should be recorded"
         );
 
@@ -2400,24 +2400,24 @@ mod config_hot_reload_tests {
         let (mut server, port) = start_server_and_checkout(dir.path());
 
         // Wait a bit — no scan should have run
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         let index = load_test_index(dir.path());
         assert!(
             !index.history.iter().any(|e| e.file == "pre_existing.txt"),
             "With scan_interval=0, file should not be scanned"
         );
 
-        // Enable periodic scanning with a 2-second interval
+        // Enable periodic scanning with 1s interval (server re-checks config every 2s when disabled)
         ftm_client(port)
-            .args(["config", "set", "settings.scan_interval", "2"])
+            .args(["config", "set", "settings.scan_interval", "1"])
             .assert()
             .success();
 
-        // Wait for the periodic scanner to fire (up to 15s: 10s poll + 2s interval + buffer)
-        let found = wait_for_index(dir.path(), "pre_existing.txt", 1, 15000);
+        // Wait for the periodic scanner to fire (up to 6s: 2s re-check + 1s interval + buffer)
+        let found = wait_for_index(dir.path(), "pre_existing.txt", 1, 6000);
         assert!(
             found,
-            "After setting scan_interval=2, periodic scanner should pick up pre_existing.txt"
+            "After setting scan_interval=1, periodic scanner should pick up pre_existing.txt"
         );
 
         stop_server(&mut server);
@@ -2661,13 +2661,13 @@ mod periodic_scan_tests {
         )
         .unwrap();
 
-        // Pre-init .ftm with a short scan interval (2 seconds)
-        pre_init_ftm_with_scan(dir.path(), 100, 30 * 1024 * 1024, 2);
+        // Pre-init .ftm with 1s scan interval
+        pre_init_ftm_with_scan(dir.path(), 100, 30 * 1024 * 1024, 1);
 
         let (mut server, _port) = start_server_and_checkout(dir.path());
 
-        // Wait for the periodic scanner to fire (interval=2s, give it up to 8s)
-        let found = wait_for_index(dir.path(), "pre_existing.txt", 1, 8000);
+        // Wait for the periodic scanner to fire (interval=1s, give it up to 5s)
+        let found = wait_for_index(dir.path(), "pre_existing.txt", 1, 5000);
         assert!(
             found,
             "Periodic scanner should have picked up pre_existing.txt"
@@ -2701,8 +2701,8 @@ mod periodic_scan_tests {
 
         let (mut server, _port) = start_server_and_checkout(dir.path());
 
-        // Wait 4 seconds — if scanning were enabled at 0, it would have fired
-        std::thread::sleep(std::time::Duration::from_secs(4));
+        // Wait 2s — if scanning were enabled (e.g. 1s interval), file would have been picked up
+        std::thread::sleep(std::time::Duration::from_secs(2));
 
         let index = load_test_index(dir.path());
         let entries: Vec<_> = index

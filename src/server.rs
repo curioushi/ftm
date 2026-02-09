@@ -303,8 +303,8 @@ async fn checkout(
                 };
 
                 if scan_interval == 0 {
-                    // Scanning disabled; re-check config periodically
-                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    // Scanning disabled; re-check config periodically (short sleep so config set takes effect soon)
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
 
