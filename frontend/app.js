@@ -1036,23 +1036,7 @@
       const mouseTime = xToTime(x, w);
       const leftRatio = (mouseTime - tlViewStart) / (tlViewEnd - tlViewStart);
 
-      let newSpan = (tlViewEnd - tlViewStart) * factor;
-      newSpan = Math.max(MIN_VIEW_SPAN, newSpan);
-
-      // Find max span from all entries
-      let allMin = Infinity;
-      let allMax = -Infinity;
-      for (const lane of tlLanes) {
-        for (const ent of lane.entries) {
-          const ts = new Date(ent.timestamp).getTime();
-          if (ts < allMin) allMin = ts;
-          if (ts > allMax) allMax = ts;
-        }
-      }
-      if (allMax > allMin) {
-        const maxSpan = (allMax - allMin) * 3;
-        newSpan = Math.min(newSpan, Math.max(maxSpan, MIN_VIEW_SPAN * 100));
-      }
+      const newSpan = (tlViewEnd - tlViewStart) * factor;
 
       tlViewStart = mouseTime - leftRatio * newSpan;
       tlViewEnd = mouseTime + (1 - leftRatio) * newSpan;
@@ -2029,8 +2013,7 @@
       if (key === 'w') {
         e.preventDefault();
         const center = (tlViewStart + tlViewEnd) / 2;
-        let newSpan = span / 1.2;
-        newSpan = Math.max(MIN_VIEW_SPAN, newSpan);
+        const newSpan = span / 1.2;
         tlViewStart = center - newSpan / 2;
         tlViewEnd = center + newSpan / 2;
         updateTimelineLabel();
@@ -2040,20 +2023,7 @@
       if (key === 's') {
         e.preventDefault();
         const center = (tlViewStart + tlViewEnd) / 2;
-        let newSpan = span * 1.2;
-        let allMin = Infinity;
-        let allMax = -Infinity;
-        for (const lane of tlLanes) {
-          for (const ent of lane.entries) {
-            const ts = new Date(ent.timestamp).getTime();
-            if (ts < allMin) allMin = ts;
-            if (ts > allMax) allMax = ts;
-          }
-        }
-        if (allMax > allMin) {
-          const maxSpan = (allMax - allMin) * 3;
-          newSpan = Math.min(newSpan, Math.max(maxSpan, MIN_VIEW_SPAN * 100));
-        }
+        const newSpan = span * 1.2;
         tlViewStart = center - newSpan / 2;
         tlViewEnd = center + newSpan / 2;
         updateTimelineLabel();
