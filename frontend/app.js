@@ -17,6 +17,7 @@
   let visibleFilePaths = [];
   let diffSingleMode = false;
   let selectedRestoreChecksum = null;
+  const SELECTED_FILE_STORAGE_KEY = 'ftm-selected-file';
 
   // ---- DOM refs ------------------------------------------------------------
   const $filter = document.getElementById('filter');
@@ -265,6 +266,7 @@
 
   async function selectFile(path) {
     currentFile = path;
+    rememberSelectedFile(path);
     selectedRestoreChecksum = null;
     updateRestoreButton();
     renderFileList();
@@ -812,6 +814,43 @@
     }
   }
 
+  function rememberSelectedFile(path) {
+    if (!path) {
+      localStorage.removeItem(SELECTED_FILE_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(SELECTED_FILE_STORAGE_KEY, path);
+  }
+
+  function restoreSelectedFile() {
+    return localStorage.getItem(SELECTED_FILE_STORAGE_KEY);
+  }
+
+  function treeHasFile(nodes, targetPath, prefix) {
+    for (const node of nodes) {
+      const fullPath = prefix ? prefix + '/' + node.name : node.name;
+      if (node.children) {
+        if (treeHasFile(node.children, targetPath, fullPath)) {
+          return true;
+        }
+      } else if (fullPath === targetPath) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function expandDirsForPath(path) {
+    if (!path) return;
+    const parts = path.split('/').filter(Boolean);
+    if (parts.length <= 1) return;
+    let current = '';
+    for (let i = 0; i < parts.length - 1; i++) {
+      current = current ? current + '/' + parts[i] : parts[i];
+      collapsedDirs.delete(current);
+    }
+  }
+
   function shouldIgnoreKeyboard(e) {
     const target = e.target;
     if (!target) return false;
@@ -865,6 +904,11 @@
       if (health.watch_dir) {
         $status.textContent = health.watch_dir;
         await loadFiles();
+        const storedFile = restoreSelectedFile();
+        if (storedFile && treeHasFile(fileTree, storedFile, '')) {
+          expandDirsForPath(storedFile);
+          await selectFile(storedFile);
+        }
       } else {
         $status.textContent = 'No directory checked out';
         $diffViewer.innerHTML =
