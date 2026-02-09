@@ -969,7 +969,7 @@
     if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
       const span = tlViewEnd - tlViewStart;
       const delta = (e.deltaX || e.deltaY) > 0 ? 1 : -1;
-      const panAmount = span * 0.1 * delta;
+      const panAmount = span * 0.015 * delta;
       tlViewStart += panAmount;
       tlViewEnd += panAmount;
     } else if (e.ctrlKey || e.metaKey) {
@@ -1895,6 +1895,64 @@
 
   function onTimelineKeydown(e) {
     if (shouldIgnoreKeyboard(e)) return;
+
+    if (isMouseOverTimeline && tlLanes.length > 0) {
+      const key = e.key.toLowerCase();
+      const span = tlViewEnd - tlViewStart;
+      if (key === 'a') {
+        e.preventDefault();
+        const step = span * 0.075;
+        tlViewStart -= step;
+        tlViewEnd -= step;
+        updateTimelineLabel();
+        requestTimelineDraw();
+        return;
+      }
+      if (key === 'd') {
+        e.preventDefault();
+        const step = span * 0.075;
+        tlViewStart += step;
+        tlViewEnd += step;
+        updateTimelineLabel();
+        requestTimelineDraw();
+        return;
+      }
+      if (key === 'w') {
+        e.preventDefault();
+        const center = (tlViewStart + tlViewEnd) / 2;
+        let newSpan = span / 1.2;
+        newSpan = Math.max(MIN_VIEW_SPAN, newSpan);
+        tlViewStart = center - newSpan / 2;
+        tlViewEnd = center + newSpan / 2;
+        updateTimelineLabel();
+        requestTimelineDraw();
+        return;
+      }
+      if (key === 's') {
+        e.preventDefault();
+        const center = (tlViewStart + tlViewEnd) / 2;
+        let newSpan = span * 1.2;
+        let allMin = Infinity;
+        let allMax = -Infinity;
+        for (const lane of tlLanes) {
+          for (const ent of lane.entries) {
+            const ts = new Date(ent.timestamp).getTime();
+            if (ts < allMin) allMin = ts;
+            if (ts > allMax) allMax = ts;
+          }
+        }
+        if (allMax > allMin) {
+          const maxSpan = (allMax - allMin) * 3;
+          newSpan = Math.min(newSpan, Math.max(maxSpan, MIN_VIEW_SPAN * 100));
+        }
+        tlViewStart = center - newSpan / 2;
+        tlViewEnd = center + newSpan / 2;
+        updateTimelineLabel();
+        requestTimelineDraw();
+        return;
+      }
+    }
+
     if (historyEntries.length === 0) return;
     if (e.key === 'ArrowLeft') {
       e.preventDefault();
