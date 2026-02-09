@@ -13,6 +13,9 @@
           <span class="logo">FTM - File Time Machine</span>
         </div>
         <div class="toolbar-right">
+          <label class="toolbar-checkbox"
+            ><input type="checkbox" id="show-deleted" /> Show deleted files</label
+          >
           <button id="btn-scan" title="Scan for changes">Scan</button>
           <span id="status"></span>
         </div>
@@ -21,18 +24,6 @@
       <div id="main">
         <aside id="sidebar">
           <div id="sidebar-header">
-            <span>Files</span>
-            <div id="tree-depth-buttons">
-              <button class="tree-depth-btn" data-action="collapse-all" title="Collapse all">
-                &minus;
-              </button>
-              <button class="tree-depth-btn" data-action="depth-1" title="Expand depth 1">1</button>
-              <button class="tree-depth-btn" data-action="depth-2" title="Expand depth 2">2</button>
-              <button class="tree-depth-btn" data-action="depth-3" title="Expand depth 3">3</button>
-              <button class="tree-depth-btn" data-action="expand-all" title="Expand all">+</button>
-            </div>
-          </div>
-          <div id="sidebar-filter">
             <input
               id="filter"
               type="text"
@@ -40,9 +31,24 @@
               autocomplete="off"
               spellcheck="false"
             />
-            <label class="sidebar-checkbox"
-              ><input type="checkbox" id="hide-deleted" checked /> Hide deleted files</label
+            <div
+              id="tree-depth-track"
+              class="tree-depth-track"
+              role="slider"
+              aria-valuemin="0"
+              aria-valuemax="4"
+              aria-valuenow="4"
+              title="Tree depth: drag or click"
             >
+              <div class="tree-depth-rail">
+                <span class="tree-depth-dot" data-index="0" title="Collapse all"></span>
+                <span class="tree-depth-dot" data-index="1" title="Depth 1"></span>
+                <span class="tree-depth-dot" data-index="2" title="Depth 2"></span>
+                <span class="tree-depth-dot" data-index="3" title="Depth 3"></span>
+                <span class="tree-depth-dot" data-index="4" title="Expand all"></span>
+              </div>
+              <div class="tree-depth-thumb" id="tree-depth-thumb"></div>
+            </div>
           </div>
           <div id="file-list"></div>
         </aside>

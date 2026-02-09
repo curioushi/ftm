@@ -23,6 +23,7 @@
   const SELECTED_FILE_STORAGE_KEY = 'ftm-selected-file';
   const TL_HEIGHT_STORAGE_KEY = 'ftm-timeline-height';
   const TL_LANES_WIDTH_STORAGE_KEY = 'ftm-tl-lanes-width';
+  const TREE_DEPTH_STORAGE_KEY = 'ftm-tree-depth';
 
   // Timeline state
   let tlViewStart = 0; // ms timestamp (left edge of visible range)
@@ -67,7 +68,7 @@
 
   // ---- DOM refs ------------------------------------------------------------
   const $filter = document.getElementById('filter');
-  const $hideDeleted = document.getElementById('hide-deleted');
+  const $showDeleted = document.getElementById('show-deleted');
   const $fileList = document.getElementById('file-list');
   const $diffViewer = document.getElementById('diff-viewer');
   const $diffTitle = document.getElementById('diff-title');
@@ -126,6 +127,7 @@
       const includeDeleted = !hideDeletedFiles;
       const q = includeDeleted ? '?include_deleted=true' : '';
       fileTree = await apiJson('/api/files' + q);
+      applyDepthByIndex(currentDepthIndex);
       renderFileList();
     } catch (e) {
       $status.textContent = e.message;
@@ -338,7 +340,9 @@
     }
   }
 
-  // ---- Tree depth buttons ---------------------------------------------------
+  // ---- Tree depth track (o-o-o-x-o discrete draggable) ----------------------
+  let currentDepthIndex = 4; // 0=collapse, 1..3=depth, 4=expand
+
   function collectAllDirPaths(nodes, prefix, depth, result) {
     for (const node of nodes) {
       const fullPath = prefix ? prefix + '/' + node.name : node.name;
@@ -350,32 +354,104 @@
     return result;
   }
 
-  function initTreeDepthButtons() {
-    const buttons = document.querySelectorAll('.tree-depth-btn');
-    buttons.forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const action = btn.dataset.action;
-        const dirs = collectAllDirPaths(fileTree, '', 0, []);
-
-        if (action === 'expand-all') {
-          collapsedDirs.clear();
-        } else if (action === 'collapse-all') {
-          collapsedDirs.clear();
-          for (const d of dirs) {
-            collapsedDirs.add(d.path);
-          }
-        } else if (action.startsWith('depth-')) {
-          const maxDepth = parseInt(action.replace('depth-', ''), 10);
-          collapsedDirs.clear();
-          for (const d of dirs) {
-            if (d.depth >= maxDepth) {
-              collapsedDirs.add(d.path);
-            }
-          }
+  function applyDepthByIndex(index) {
+    const dirs = collectAllDirPaths(fileTree, '', 0, []);
+    if (index === 0) {
+      collapsedDirs.clear();
+      for (const d of dirs) {
+        collapsedDirs.add(d.path);
+      }
+    } else if (index === 4) {
+      collapsedDirs.clear();
+    } else {
+      const maxDepth = index;
+      collapsedDirs.clear();
+      for (const d of dirs) {
+        if (d.depth >= maxDepth) {
+          collapsedDirs.add(d.path);
         }
-        renderFileList();
-      });
+      }
+    }
+    renderFileList();
+  }
+
+  function positionTreeDepthThumb() {
+    const track = document.getElementById('tree-depth-track');
+    const thumb = document.getElementById('tree-depth-thumb');
+    if (!track || !thumb) return;
+    const rail = track.querySelector('.tree-depth-rail');
+    if (!rail) return;
+    const trackRect = track.getBoundingClientRect();
+    const railRect = rail.getBoundingClientRect();
+    const railWidth = railRect.width;
+    if (railWidth <= 0) return;
+    const railLeft = railRect.left - trackRect.left;
+    const centerX = railLeft + (currentDepthIndex / 4) * railWidth;
+    thumb.style.left = centerX + 'px';
+    track.setAttribute('aria-valuenow', currentDepthIndex);
+  }
+
+  function indexFromClientX(clientX) {
+    const track = document.getElementById('tree-depth-track');
+    const rail = track.querySelector('.tree-depth-rail');
+    if (!track || !rail) return currentDepthIndex;
+    const railRect = rail.getBoundingClientRect();
+    const x = clientX - railRect.left;
+    const w = railRect.width;
+    if (w <= 0) return currentDepthIndex;
+    const ratio = Math.max(0, Math.min(1, x / w));
+    return Math.round(ratio * 4);
+  }
+
+  function initTreeDepthButtons() {
+    const saved = localStorage.getItem(TREE_DEPTH_STORAGE_KEY);
+    if (saved !== null) {
+      const i = parseInt(saved, 10);
+      if (i >= 0 && i <= 4) currentDepthIndex = i;
+    }
+
+    const track = document.getElementById('tree-depth-track');
+    const thumb = document.getElementById('tree-depth-thumb');
+    if (!track || !thumb) return;
+
+    positionTreeDepthThumb();
+    applyDepthByIndex(currentDepthIndex);
+
+    track.addEventListener('click', (e) => {
+      const dot = e.target.closest('.tree-depth-dot');
+      if (!dot) return;
+      const i = parseInt(dot.dataset.index, 10);
+      if (i < 0 || i > 4) return;
+      currentDepthIndex = i;
+      positionTreeDepthThumb();
+      applyDepthByIndex(currentDepthIndex);
+      localStorage.setItem(TREE_DEPTH_STORAGE_KEY, String(currentDepthIndex));
     });
+
+    track.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      track.classList.add('dragging');
+      const onMove = (e2) => {
+        const i = indexFromClientX(e2.clientX);
+        if (i !== currentDepthIndex) {
+          currentDepthIndex = i;
+          positionTreeDepthThumb();
+          applyDepthByIndex(currentDepthIndex);
+          localStorage.setItem(TREE_DEPTH_STORAGE_KEY, String(currentDepthIndex));
+        }
+      };
+      const onUp = () => {
+        track.classList.remove('dragging');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+      onMove(e);
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+
+    window.addEventListener('resize', positionTreeDepthThumb);
   }
 
   // ---- Sidebar resize -------------------------------------------------------
@@ -1899,8 +1975,8 @@
     }
   }
 
-  $hideDeleted.addEventListener('change', () => {
-    hideDeletedFiles = $hideDeleted.checked;
+  $showDeleted.addEventListener('change', () => {
+    hideDeletedFiles = !$showDeleted.checked;
     loadFiles();
     refreshTimelineView();
   });
@@ -2158,8 +2234,21 @@
   }
 
   // ---- Init ----------------------------------------------------------------
+  function ensureFirstVisitLayoutDefaults() {
+    const SIDEBAR_KEY = 'ftm-sidebar-width';
+    const w = window.innerWidth;
+    const width18 = Math.round(w * 0.18);
+    const width21 = Math.round(w * 0.21);
+    if (!localStorage.getItem(SIDEBAR_KEY)) localStorage.setItem(SIDEBAR_KEY, String(width21));
+    if (!localStorage.getItem(TL_HEIGHT_STORAGE_KEY))
+      localStorage.setItem(TL_HEIGHT_STORAGE_KEY, String(width18));
+    if (!localStorage.getItem(TL_LANES_WIDTH_STORAGE_KEY))
+      localStorage.setItem(TL_LANES_WIDTH_STORAGE_KEY, String(width21));
+  }
+
   async function init() {
-    hideDeletedFiles = $hideDeleted.checked;
+    hideDeletedFiles = !$showDeleted.checked;
+    ensureFirstVisitLayoutDefaults();
     initSidebarResize();
     initTimeline();
     initTreeDepthButtons();

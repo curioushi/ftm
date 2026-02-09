@@ -168,16 +168,7 @@ input[type='text']:focus {
   flex-shrink: 0;
 }
 
-#sidebar-filter {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-#sidebar-filter #filter {
+#sidebar-header #filter {
   flex: 1;
   min-width: 0;
 }
@@ -196,30 +187,76 @@ input[type='text']:focus {
   margin: 0;
 }
 
-#tree-depth-buttons {
-  display: flex;
-  gap: 2px;
-}
+/* Tree depth: o-o-o-x-o discrete draggable track */
+#tree-depth-track {
+  --td-dot-size: 8px;
+  --td-thumb-size: 12px;
+  --td-rail-height: 4px;
 
-.tree-depth-btn {
-  padding: 0;
-  width: 20px;
+  position: relative;
+  width: 88px;
   height: 18px;
-  font-size: 11px;
-  line-height: 18px;
-  text-align: center;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--fg-dim);
+  display: flex;
+  align-items: center;
   cursor: pointer;
-  transition:
-    background 0.1s,
-    color 0.1s;
+  user-select: none;
+  touch-action: none;
 }
 
-.tree-depth-btn:hover {
+#tree-depth-track.dragging {
+  cursor: grabbing;
+}
+
+.tree-depth-rail {
+  position: absolute;
+  left: calc(var(--td-thumb-size) / 2);
+  right: calc(var(--td-thumb-size) / 2);
+  height: var(--td-rail-height);
+  background: var(--border);
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  pointer-events: none;
+}
+
+.tree-depth-dot {
+  width: var(--td-dot-size);
+  height: var(--td-dot-size);
+  border-radius: 50%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  margin: 0 -2px;
+  pointer-events: auto;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+
+.tree-depth-dot:hover {
+  border-color: var(--fg-dim);
   background: var(--bg-hover);
-  color: var(--fg);
+}
+
+.tree-depth-thumb {
+  position: absolute;
+  width: var(--td-thumb-size);
+  height: var(--td-thumb-size);
+  left: 0;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--fg);
+  border: 2px solid var(--bg);
+  box-shadow: 0 0 0 1px var(--border);
+  box-sizing: border-box;
+  pointer-events: none;
+  transition: left 0.12s ease-out;
+  z-index: 1;
+}
+
+#tree-depth-track.dragging .tree-depth-thumb {
+  transition: none;
 }
 
 #file-list {
