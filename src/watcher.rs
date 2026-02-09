@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::storage::Storage;
 use anyhow::Result;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, RwLock};
@@ -158,37 +159,93 @@ impl FileWatcher {
 
     pub fn watch(&self) -> Result<()> {
         let (tx, rx) = mpsc::channel();
-        let (task_tx, task_rx) = mpsc::channel();
+        let (task_tx, task_rx) = mpsc::channel::<WorkerTask>();
 
         let root_dir = self.root_dir.clone();
         let config = self.config.clone();
         thread::spawn(move || {
-            for task in task_rx {
-                // Read max_history from shared config on each task so changes
-                // via `config set` are picked up immediately.
+            loop {
+                // Block until the first task arrives
+                let first = match task_rx.recv() {
+                    Ok(t) => t,
+                    Err(_) => break, // channel closed
+                };
+
+                // Drain all tasks that have already arrived in the channel.
+                // For burst operations (rm -rf, cp -a) many events queue up
+                // while the previous batch is being processed, so this
+                // effectively batches them. For individual writes the channel
+                // is empty and we process immediately with no added latency.
+                let mut batch = vec![first];
+                while let Ok(task) = task_rx.try_recv() {
+                    batch.push(task);
+                }
+
+                // Read max_history from shared config so changes via
+                // `config set` are picked up immediately.
                 let max_history = config.read().unwrap().settings.max_history;
                 let storage = Storage::new(root_dir.join(".ftm"), max_history);
-                match task {
-                    WorkerTask::Snapshot(path) => {
-                        if let Ok(Some(entry)) = storage.save_snapshot(&path, &root_dir) {
-                            info!(
-                                "Snapshot saved: {} [{}] checksum={}",
-                                entry.file,
-                                entry.op,
-                                entry.checksum.as_deref().unwrap_or("none")
-                            );
-                        }
+
+                // Deduplicate the batch before processing
+                let batch = deduplicate_batch(batch);
+
+                // Single load for the entire batch
+                let mut index = match storage.load_index() {
+                    Ok(idx) => idx,
+                    Err(e) => {
+                        tracing::warn!("Failed to load index: {}", e);
+                        continue;
                     }
-                    WorkerTask::DeletePrefix(path) => {
-                        if let Ok(count) = storage.record_deletes_under_prefix(&path, &root_dir) {
-                            if count > 0 {
-                                info!(
-                                    "Files under {} recorded as deleted ({} entries)",
-                                    path.display(),
-                                    count
-                                );
+                };
+                let mut view = storage.build_index_view(&index);
+                let mut changed = false;
+
+                for task in batch {
+                    match task {
+                        WorkerTask::Snapshot(path) => {
+                            match storage
+                                .save_snapshot_with_index(&path, &root_dir, &mut index, &mut view)
+                            {
+                                Ok(Some(entry)) => {
+                                    info!(
+                                        "Snapshot saved: {} [{}] checksum={}",
+                                        entry.file,
+                                        entry.op,
+                                        entry.checksum.as_deref().unwrap_or("none")
+                                    );
+                                    changed = true;
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    tracing::warn!("Snapshot error for {}: {}", path.display(), e);
+                                }
                             }
                         }
+                        WorkerTask::DeletePrefix(path) => {
+                            match storage.record_deletes_under_prefix_with_index(
+                                &path, &root_dir, &mut index, &mut view,
+                            ) {
+                                Ok(count) if count > 0 => {
+                                    info!(
+                                        "Files under {} recorded as deleted ({} entries)",
+                                        path.display(),
+                                        count
+                                    );
+                                    changed = true;
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    tracing::warn!("Delete error for {}: {}", path.display(), e);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Single save for the entire batch
+                if changed {
+                    if let Err(e) = storage.save_index(&index) {
+                        tracing::warn!("Failed to save index: {}", e);
                     }
                 }
             }
@@ -212,4 +269,52 @@ impl FileWatcher {
 
         Ok(())
     }
+}
+
+/// Deduplicate a batch of worker tasks:
+/// - For Snapshot: keep only the last occurrence per path
+/// - For DeletePrefix: drop paths already covered by a shorter ancestor prefix
+fn deduplicate_batch(batch: Vec<WorkerTask>) -> Vec<WorkerTask> {
+    // Find the last index of each Snapshot path
+    let mut last_snapshot: HashMap<PathBuf, usize> = HashMap::new();
+    for (i, task) in batch.iter().enumerate() {
+        if let WorkerTask::Snapshot(ref path) = task {
+            last_snapshot.insert(path.clone(), i);
+        }
+    }
+
+    // Collect all unique delete prefixes for ancestor-check
+    let delete_prefixes: Vec<PathBuf> = batch
+        .iter()
+        .filter_map(|task| {
+            if let WorkerTask::DeletePrefix(ref path) = task {
+                Some(path.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Track which DeletePrefix paths we have already emitted
+    let mut emitted_deletes = std::collections::HashSet::<PathBuf>::new();
+
+    batch
+        .into_iter()
+        .enumerate()
+        .filter(|(i, task)| match task {
+            WorkerTask::Snapshot(ref path) => last_snapshot.get(path) == Some(i),
+            WorkerTask::DeletePrefix(ref path) => {
+                // Skip if a shorter ancestor prefix exists in the batch
+                let dominated = delete_prefixes
+                    .iter()
+                    .any(|other| other != path && path.starts_with(other));
+                if dominated {
+                    return false;
+                }
+                // Skip duplicate delete for the same path
+                emitted_deletes.insert(path.clone())
+            }
+        })
+        .map(|(_, task)| task)
+        .collect()
 }

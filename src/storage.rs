@@ -81,7 +81,7 @@ impl Storage {
     }
 
     pub fn save_index(&self, index: &Index) -> Result<()> {
-        let content = serde_json::to_string_pretty(index)?;
+        let content = serde_json::to_string(index)?;
         std::fs::write(self.index_path(), content)?;
         Ok(())
     }
@@ -140,6 +140,7 @@ impl Storage {
         Ok(Some((checksum, size)))
     }
 
+    #[allow(dead_code)]
     pub fn save_snapshot(&self, file_path: &Path, root_dir: &Path) -> Result<Option<HistoryEntry>> {
         let mut index = self.load_index()?;
         let mut view = IndexView::from_index(&index);
@@ -248,10 +249,34 @@ impl Storage {
     /// Record delete for every file in the index whose path equals or is under `path_prefix`.
     /// Used when a directory (or single file) is removed/renamed so all tracked files under
     /// that path get a delete entry. Returns the number of delete entries added.
+    #[allow(dead_code)]
     pub fn record_deletes_under_prefix(
         &self,
         path_prefix: &Path,
         root_dir: &Path,
+    ) -> Result<usize> {
+        let mut index = self.load_index()?;
+        let mut view = IndexView::from_index(&index);
+        let count = self.record_deletes_under_prefix_with_index(
+            path_prefix,
+            root_dir,
+            &mut index,
+            &mut view,
+        )?;
+        if count > 0 {
+            self.save_index(&index)?;
+        }
+        Ok(count)
+    }
+
+    /// Like `record_deletes_under_prefix` but operates on a caller-owned Index + IndexView,
+    /// avoiding redundant load/save when batching multiple operations.
+    pub fn record_deletes_under_prefix_with_index(
+        &self,
+        path_prefix: &Path,
+        root_dir: &Path,
+        index: &mut Index,
+        view: &mut IndexView,
     ) -> Result<usize> {
         let rel_prefix = path_prefix.strip_prefix(root_dir).unwrap_or(path_prefix);
         let rel_prefix_str = rel_prefix.to_string_lossy().replace('\\', "/");
@@ -261,78 +286,71 @@ impl Storage {
         }
         let prefix_with_slash = format!("{}/", rel_prefix_trimmed);
 
-        let mut index = self.load_index()?;
-        let mut files_to_delete: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        for entry in &index.history {
-            let file_norm = entry.file.replace('\\', "/");
-            if file_norm == rel_prefix_trimmed || file_norm.starts_with(&prefix_with_slash) {
-                files_to_delete.insert(entry.file.clone());
-            }
-        }
+        // Use IndexView for O(1) last-entry lookup instead of O(n) linear scan
+        let files_to_delete: Vec<String> = view
+            .last_by_file
+            .iter()
+            .filter_map(|(file_key, &idx)| {
+                let file_norm = file_key.replace('\\', "/");
+                if file_norm == rel_prefix_trimmed || file_norm.starts_with(&prefix_with_slash) {
+                    if index
+                        .history
+                        .get(idx)
+                        .map(|e| e.op != Operation::Delete)
+                        .unwrap_or(false)
+                    {
+                        return Some(file_key.clone());
+                    }
+                }
+                None
+            })
+            .collect();
 
-        for file_key in &files_to_delete {
-            if matches!(
-                self.get_last_entry_for_file(&index, file_key),
-                Some(last) if last.op == Operation::Delete
-            ) {
-                continue;
-            }
+        let count = files_to_delete.len();
+        for file_key in files_to_delete {
             let entry = HistoryEntry {
                 timestamp: Utc::now(),
                 op: Operation::Delete,
-                file: file_key.clone(),
+                file: file_key,
                 checksum: None,
                 size: None,
             };
-            index.history.push(entry);
+            index.history.push(entry.clone());
+            view.update_last_for_file(entry.file.clone(), index.history.len() - 1);
         }
-        let count = files_to_delete.len();
         if count > 0 {
-            let _ = self.trim_history(&mut index);
-            self.save_index(&index)?;
+            if self.trim_history(index) {
+                view.rebuild(index);
+            }
         }
         Ok(count)
     }
 
     fn trim_history(&self, index: &mut Index) -> bool {
-        use std::collections::HashMap;
-
-        // Count entries per file
+        // Single O(n) pass: count per-file entries from newest to oldest,
+        // marking old entries for removal via a keep-bitmap.
         let mut file_counts: HashMap<&str, usize> = HashMap::new();
-        for entry in index.history.iter().rev() {
-            *file_counts.entry(&entry.file).or_insert(0) += 1;
-        }
+        let mut keep = vec![true; index.history.len()];
+        let mut any_removed = false;
 
-        // Find files that exceed max_history
-        let files_to_trim: Vec<String> = file_counts
-            .iter()
-            .filter(|(_, &count)| count > self.max_history)
-            .map(|(&file, _)| file.to_string())
-            .collect();
-
-        let mut removed = false;
-        for file in files_to_trim {
-            let mut count = 0;
-            let mut to_remove = Vec::new();
-
-            // Iterate from newest to oldest, mark old entries for removal
-            for (i, entry) in index.history.iter().enumerate().rev() {
-                if entry.file == file {
-                    count += 1;
-                    if count > self.max_history {
-                        to_remove.push(i);
-                    }
-                }
-            }
-
-            // Remove from end to start to preserve indices
-            for i in to_remove {
-                index.history.remove(i);
-                removed = true;
+        for (i, entry) in index.history.iter().enumerate().rev() {
+            let count = file_counts.entry(&entry.file).or_insert(0);
+            *count += 1;
+            if *count > self.max_history {
+                keep[i] = false;
+                any_removed = true;
             }
         }
-        removed
+
+        if any_removed {
+            let mut idx = 0;
+            index.history.retain(|_| {
+                let k = keep[idx];
+                idx += 1;
+                k
+            });
+        }
+        any_removed
     }
 
     /// Read the raw bytes of a snapshot by its full checksum.
