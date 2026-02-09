@@ -116,7 +116,8 @@ input[type="text"]:focus {
 /* -- Sidebar -- */
 #sidebar {
   width: 220px;
-  min-width: 160px;
+  min-width: 120px;
+  max-width: 50vw;
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -137,21 +138,82 @@ input[type="text"]:focus {
   overflow-y: auto;
   overflow-x: hidden;
 }
-.file-item {
-  padding: 5px 10px;
+
+/* -- Resize handle -- */
+#resize-handle {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  flex-shrink: 0;
+  transition: background 0.15s;
+  z-index: 5;
+}
+#resize-handle:hover,
+#resize-handle.dragging {
+  background: var(--blue);
+}
+body.resizing {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+body.resizing * {
+  cursor: col-resize !important;
+}
+
+/* -- Tree file list -- */
+.tree-dir-row {
+  padding: 3px 8px;
   cursor: pointer;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid #1a1a1a;
   font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
-.file-item:hover { background: var(--bg-hover); }
-.file-item.active { background: var(--bg-active); color: var(--fg-bright); }
-.file-item .count {
+.tree-dir-row:hover { background: var(--bg-hover); }
+.tree-dir-row .arrow {
+  display: inline-block;
+  transition: transform 0.15s;
+  font-size: 10px;
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+  color: var(--fg-dim);
+}
+.tree-dir-row.collapsed .arrow {
+  transform: rotate(-90deg);
+}
+.tree-dir-row .dir-name {
+  color: var(--fg);
+  font-weight: 500;
+}
+.tree-children {
+  overflow: hidden;
+}
+.tree-children.collapsed {
+  display: none;
+}
+.tree-file {
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+.tree-file:hover { background: var(--bg-hover); }
+.tree-file.active { background: var(--bg-active); color: var(--fg-bright); }
+.tree-file .file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree-file .count {
   font-size: 10px;
   color: var(--fg-dim);
   flex-shrink: 0;

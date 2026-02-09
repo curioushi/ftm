@@ -5,11 +5,12 @@
   "use strict";
 
   // ---- State ---------------------------------------------------------------
-  let allFiles = [];          // [{path, count}, ...]
-  let currentFile = null;     // selected file path
-  let historyEntries = [];    // history for current file
-  let activeEntryIdx = -1;    // selected timeline node index
-  let diffRows = [];          // flat array of rendered diff row data
+  let fileTree = [];           // raw tree from API [{name, count?, children?}]
+  let currentFile = null;      // selected file path
+  let historyEntries = [];     // history for current file
+  let activeEntryIdx = -1;     // selected timeline node index
+  let diffRows = [];           // flat array of rendered diff row data
+  let collapsedDirs = new Set(); // collapsed directory paths
 
   // ---- DOM refs ------------------------------------------------------------
   const $filter = document.getElementById("filter");
@@ -21,6 +22,8 @@
   const $timelineLabel = document.getElementById("timeline-label");
   const $btnScan = document.getElementById("btn-scan");
   const $status = document.getElementById("status");
+  const $sidebar = document.getElementById("sidebar");
+  const $resizeHandle = document.getElementById("resize-handle");
 
   // ---- API helpers ---------------------------------------------------------
   const API = "";
@@ -54,56 +57,157 @@
 
   // ---- File list -----------------------------------------------------------
 
-  // The /api/files endpoint returns a tree of FileTreeNode:
-  //   { name, count?, children? }
-  // Flatten it into [{path, count}] for the UI.
-  function flattenTree(nodes, prefix) {
-    const result = [];
-    for (const node of nodes) {
-      const fullPath = prefix ? prefix + "/" + node.name : node.name;
-      if (node.children) {
-        result.push(...flattenTree(node.children, fullPath));
-      } else {
-        result.push({ path: fullPath, count: node.count || 0 });
-      }
-    }
-    return result;
-  }
-
   async function loadFiles() {
     try {
-      const tree = await apiJson("/api/files");
-      allFiles = flattenTree(tree, "");
+      fileTree = await apiJson("/api/files");
       renderFileList();
     } catch (e) {
       $status.textContent = e.message;
     }
   }
 
+  // Filter tree: return new tree with only matching files and their ancestors
+  function filterTree(nodes, query, prefix) {
+    const result = [];
+    for (const node of nodes) {
+      const fullPath = prefix ? prefix + "/" + node.name : node.name;
+      if (node.children) {
+        const filteredChildren = filterTree(node.children, query, fullPath);
+        if (filteredChildren.length > 0) {
+          result.push({ name: node.name, children: filteredChildren });
+        }
+      } else {
+        if (fullPath.toLowerCase().includes(query)) {
+          result.push({ name: node.name, count: node.count });
+        }
+      }
+    }
+    return result;
+  }
+
   function renderFileList() {
     const query = $filter.value.toLowerCase();
-    const filtered = query
-      ? allFiles.filter((f) => f.path.toLowerCase().includes(query))
-      : allFiles;
+    const tree = query ? filterTree(fileTree, query, "") : fileTree;
 
     $fileList.innerHTML = "";
 
-    if (filtered.length === 0) {
+    if (tree.length === 0) {
       $fileList.innerHTML = '<div class="empty-state">No files</div>';
       return;
     }
 
     const frag = document.createDocumentFragment();
-    for (const f of filtered) {
-      const el = document.createElement("div");
-      el.className = "file-item" + (f.path === currentFile ? " active" : "");
-      el.innerHTML =
-        '<span class="name">' + escapeHtml(f.path) + "</span>" +
-        '<span class="count">' + f.count + "</span>";
-      el.addEventListener("click", () => selectFile(f.path));
-      frag.appendChild(el);
-    }
+    renderTreeNodes(frag, tree, "", 0, !!query);
     $fileList.appendChild(frag);
+  }
+
+  // Recursively render tree nodes into a parent element
+  function renderTreeNodes(parent, nodes, prefix, depth, forceExpand) {
+    for (const node of nodes) {
+      const fullPath = prefix ? prefix + "/" + node.name : node.name;
+
+      if (node.children) {
+        // Directory node
+        const isCollapsed = !forceExpand && collapsedDirs.has(fullPath);
+
+        const dirRow = document.createElement("div");
+        dirRow.className = "tree-dir-row" + (isCollapsed ? " collapsed" : "");
+        dirRow.style.paddingLeft = (8 + depth * 16) + "px";
+
+        const arrow = document.createElement("span");
+        arrow.className = "arrow";
+        arrow.textContent = "\u25BE";
+
+        const nameSpan = document.createElement("span");
+        nameSpan.className = "dir-name";
+        nameSpan.textContent = node.name;
+
+        dirRow.appendChild(arrow);
+        dirRow.appendChild(nameSpan);
+        dirRow.addEventListener("click", () => {
+          if (collapsedDirs.has(fullPath)) {
+            collapsedDirs.delete(fullPath);
+          } else {
+            collapsedDirs.add(fullPath);
+          }
+          renderFileList();
+        });
+
+        parent.appendChild(dirRow);
+
+        const childContainer = document.createElement("div");
+        childContainer.className = "tree-children" + (isCollapsed ? " collapsed" : "");
+        renderTreeNodes(childContainer, node.children, fullPath, depth + 1, forceExpand);
+        parent.appendChild(childContainer);
+      } else {
+        // File node
+        const fileRow = document.createElement("div");
+        fileRow.className = "tree-file" + (fullPath === currentFile ? " active" : "");
+        fileRow.style.paddingLeft = (8 + depth * 16 + 18) + "px";
+
+        const nameSpan = document.createElement("span");
+        nameSpan.className = "file-name";
+        nameSpan.textContent = node.name;
+
+        const countSpan = document.createElement("span");
+        countSpan.className = "count";
+        countSpan.textContent = node.count || 0;
+
+        fileRow.appendChild(nameSpan);
+        fileRow.appendChild(countSpan);
+        fileRow.addEventListener("click", () => selectFile(fullPath));
+
+        parent.appendChild(fileRow);
+      }
+    }
+  }
+
+  // ---- Sidebar resize -------------------------------------------------------
+  function initSidebarResize() {
+    const STORAGE_KEY = "ftm-sidebar-width";
+    const MIN_WIDTH = 120;
+    const MAX_WIDTH_RATIO = 0.5;
+
+    // Restore saved width
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      const w = parseInt(saved, 10);
+      if (w >= MIN_WIDTH) {
+        $sidebar.style.width = w + "px";
+      }
+    }
+
+    let startX = 0;
+    let startWidth = 0;
+
+    function onMouseDown(e) {
+      e.preventDefault();
+      startX = e.clientX;
+      startWidth = $sidebar.getBoundingClientRect().width;
+      $resizeHandle.classList.add("dragging");
+      document.body.classList.add("resizing");
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    }
+
+    function onMouseMove(e) {
+      const maxW = window.innerWidth * MAX_WIDTH_RATIO;
+      let newWidth = startWidth + (e.clientX - startX);
+      newWidth = Math.max(MIN_WIDTH, Math.min(maxW, newWidth));
+      $sidebar.style.width = newWidth + "px";
+    }
+
+    function onMouseUp() {
+      $resizeHandle.classList.remove("dragging");
+      document.body.classList.remove("resizing");
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      // Persist
+      const w = Math.round($sidebar.getBoundingClientRect().width);
+      localStorage.setItem(STORAGE_KEY, String(w));
+    }
+
+    $resizeHandle.addEventListener("mousedown", onMouseDown);
   }
 
   async function selectFile(path) {
@@ -501,6 +605,8 @@
 
   // ---- Init ----------------------------------------------------------------
   async function init() {
+    initSidebarResize();
+
     try {
       const health = await apiJson("/api/health");
       if (health.watch_dir) {
