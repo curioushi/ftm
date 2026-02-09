@@ -443,7 +443,11 @@
     try {
       historyEntries = await apiJson('/api/history?file=' + encodeURIComponent(path));
       tlMode = 'single';
-      setTimelineSingleFile(path, historyEntries);
+      const showOnTimeline =
+        !hideDeletedFiles ||
+        historyEntries.length === 0 ||
+        historyEntries[historyEntries.length - 1].op !== 'delete';
+      setTimelineSingleFile(path, showOnTimeline ? historyEntries : []);
       // Auto-select latest entry
       if (historyEntries.length > 0) {
         selectEntry(historyEntries.length - 1);
@@ -471,7 +475,11 @@
         files.map((f) => apiJson('/api/history?file=' + encodeURIComponent(f)))
       );
       for (let i = 0; i < files.length; i++) {
-        for (const entry of results[i]) {
+        const fileEntries = results[i];
+        const lastIsDelete =
+          fileEntries.length > 0 && fileEntries[fileEntries.length - 1].op === 'delete';
+        if (hideDeletedFiles && lastIsDelete) continue;
+        for (const entry of fileEntries) {
           allEntries.push(entry);
         }
       }
@@ -1250,9 +1258,13 @@
     // Toggle off if same button clicked
     if (tlActiveRangeBtn === btn) {
       clearActiveRangeBtn();
-      if (currentFile && historyEntries.length > 0) {
+      if (currentFile) {
         tlMode = 'single';
-        setTimelineSingleFile(currentFile, historyEntries);
+        const showOnTimeline =
+          !hideDeletedFiles ||
+          historyEntries.length === 0 ||
+          historyEntries[historyEntries.length - 1].op !== 'delete';
+        setTimelineSingleFile(currentFile, showOnTimeline ? historyEntries : []);
       }
       return;
     }
@@ -1276,11 +1288,14 @@
     try {
       const sinceISO = new Date(since).toISOString();
       const untilISO = new Date(until).toISOString();
+      const includeDeleted = !hideDeletedFiles;
       const entries = await apiJson(
         '/api/activity?since=' +
           encodeURIComponent(sinceISO) +
           '&until=' +
-          encodeURIComponent(untilISO)
+          encodeURIComponent(untilISO) +
+          '&include_deleted=' +
+          includeDeleted
       );
 
       if (entries.length === 0) {
@@ -1798,9 +1813,62 @@
   });
 
   // ---- Hide deleted files --------------------------------------------------
+  async function refreshTimelineView() {
+    if (tlActiveRangeBtn) {
+      const range = tlActiveRangeBtn.dataset.range;
+      const now = Date.now();
+      let since = range === 'all' ? 0 : now - parseInt(range, 10);
+      const until = now;
+      try {
+        const sinceISO = new Date(since).toISOString();
+        const untilISO = new Date(until).toISOString();
+        const includeDeleted = !hideDeletedFiles;
+        const entries = await apiJson(
+          '/api/activity?since=' +
+            encodeURIComponent(sinceISO) +
+            '&until=' +
+            encodeURIComponent(untilISO) +
+            '&include_deleted=' +
+            includeDeleted
+        );
+        if (entries.length === 0) {
+          tlMode = 'multi';
+          tlLanes = [];
+          tlViewStart = since || now - 3600000;
+          tlViewEnd = until;
+        } else {
+          let viewStart = since;
+          let viewEnd = until;
+          if (range === 'all') {
+            const first = new Date(entries[0].timestamp).getTime();
+            const last = new Date(entries[entries.length - 1].timestamp).getTime();
+            const span = Math.max(last - first, MIN_VIEW_SPAN);
+            const pad = span * 0.08;
+            viewStart = first - pad;
+            viewEnd = last + pad;
+          }
+          setTimelineMultiFile(entries, viewStart, viewEnd);
+        }
+        updateTimelineLabel();
+        updateLaneLabels();
+        requestTimelineDraw();
+      } catch {
+        // Intentionally empty
+      }
+    } else if (currentFile) {
+      tlMode = 'single';
+      const showOnTimeline =
+        !hideDeletedFiles ||
+        historyEntries.length === 0 ||
+        historyEntries[historyEntries.length - 1].op !== 'delete';
+      setTimelineSingleFile(currentFile, showOnTimeline ? historyEntries : []);
+    }
+  }
+
   $hideDeleted.addEventListener('change', () => {
     hideDeletedFiles = $hideDeleted.checked;
     loadFiles();
+    refreshTimelineView();
   });
 
   // ---- Utilities -----------------------------------------------------------

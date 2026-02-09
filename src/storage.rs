@@ -379,18 +379,27 @@ impl Storage {
 
     /// Return all history entries within the given time range.
     /// Both `since` and `until` are inclusive bounds.
+    /// When `include_deleted` is false, entries for files whose last history entry is Delete are excluded.
     pub fn list_activity(
         &self,
         since: DateTime<Utc>,
         until: DateTime<Utc>,
+        include_deleted: bool,
     ) -> Result<Vec<HistoryEntry>> {
         let index = self.load_index()?;
-        let entries: Vec<HistoryEntry> = index
+        let mut entries: Vec<HistoryEntry> = index
             .history
             .iter()
             .filter(|e| e.timestamp >= since && e.timestamp <= until)
             .cloned()
             .collect();
+        if !include_deleted {
+            entries.retain(|e| {
+                self.get_last_entry_for_file(&index, &e.file)
+                    .map(|last| last.op != Operation::Delete)
+                    .unwrap_or(true)
+            });
+        }
         Ok(entries)
     }
 

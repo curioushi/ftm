@@ -96,6 +96,8 @@ struct ActivityQuery {
     since: String,
     /// ISO 8601 timestamp for the end of the time range (inclusive). Defaults to now.
     until: Option<String>,
+    /// When false or absent, entries for files whose last history entry is Delete are excluded.
+    include_deleted: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -402,8 +404,9 @@ async fn activity(
         chrono::Utc::now()
     };
 
+    let include_deleted = q.include_deleted.unwrap_or(false);
     let entries = storage
-        .list_activity(since, until)
+        .list_activity(since, until, include_deleted)
         .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(entries))
