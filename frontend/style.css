@@ -501,6 +501,7 @@ body.resizing * {
   transform: translateX(-50%);
   background: var(--bg-surface);
   border: 1px solid var(--border);
+  border-bottom: none;
   padding: 4px 8px;
   font-size: 11px;
   white-space: nowrap;
