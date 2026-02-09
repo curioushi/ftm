@@ -2,7 +2,7 @@ use crate::types::{FileTreeNode, HistoryEntry, Index, Operation};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
@@ -11,9 +11,40 @@ pub struct Storage {
     max_history: usize,
 }
 
+pub struct IndexView {
+    pub(crate) last_by_file: HashMap<String, usize>,
+}
+
 enum BuildNode {
     File(usize),
     Dir(BTreeMap<String, BuildNode>),
+}
+
+impl IndexView {
+    fn from_index(index: &Index) -> Self {
+        let mut last_by_file = HashMap::new();
+        for (i, entry) in index.history.iter().enumerate() {
+            last_by_file.insert(entry.file.clone(), i);
+        }
+        Self { last_by_file }
+    }
+
+    fn last_entry_for_file<'a>(&self, index: &'a Index, file: &str) -> Option<&'a HistoryEntry> {
+        self.last_by_file
+            .get(file)
+            .and_then(|i| index.history.get(*i))
+    }
+
+    fn update_last_for_file(&mut self, file: String, index: usize) {
+        self.last_by_file.insert(file, index);
+    }
+
+    fn rebuild(&mut self, index: &Index) {
+        self.last_by_file.clear();
+        for (i, entry) in index.history.iter().enumerate() {
+            self.last_by_file.insert(entry.file.clone(), i);
+        }
+    }
 }
 
 impl Storage {
@@ -53,6 +84,10 @@ impl Storage {
         let content = serde_json::to_string_pretty(index)?;
         std::fs::write(self.index_path(), content)?;
         Ok(())
+    }
+
+    pub fn build_index_view(&self, index: &Index) -> IndexView {
+        IndexView::from_index(index)
     }
 
     pub fn compute_checksum(content: &[u8]) -> String {
@@ -106,6 +141,22 @@ impl Storage {
     }
 
     pub fn save_snapshot(&self, file_path: &Path, root_dir: &Path) -> Result<Option<HistoryEntry>> {
+        let mut index = self.load_index()?;
+        let mut view = IndexView::from_index(&index);
+        let entry = self.save_snapshot_with_index(file_path, root_dir, &mut index, &mut view)?;
+        if entry.is_some() {
+            self.save_index(&index)?;
+        }
+        Ok(entry)
+    }
+
+    pub fn save_snapshot_with_index(
+        &self,
+        file_path: &Path,
+        root_dir: &Path,
+        index: &mut Index,
+        view: &mut IndexView,
+    ) -> Result<Option<HistoryEntry>> {
         let rel_path = file_path.strip_prefix(root_dir).unwrap_or(file_path);
         let file_key = rel_path.to_string_lossy().to_string();
 
@@ -126,8 +177,7 @@ impl Storage {
             return Ok(None);
         }
 
-        let mut index = self.load_index()?;
-        let last_entry = self.get_last_entry_for_file(&index, &file_key);
+        let last_entry = view.last_entry_for_file(index, &file_key);
         let op = match last_entry {
             Some(entry) => {
                 if entry.op == Operation::Delete {
@@ -161,20 +211,24 @@ impl Storage {
         };
 
         index.history.push(entry.clone());
-        self.trim_history(&mut index);
-        self.save_index(&index)?;
+        view.update_last_for_file(entry.file.clone(), index.history.len() - 1);
+        if self.trim_history(index) {
+            view.rebuild(index);
+        }
         Ok(Some(entry))
     }
 
-    pub fn record_delete(&self, file_path: &Path, root_dir: &Path) -> Result<Option<HistoryEntry>> {
+    pub fn record_delete_with_index(
+        &self,
+        file_path: &Path,
+        root_dir: &Path,
+        index: &mut Index,
+        view: &mut IndexView,
+    ) -> Result<Option<HistoryEntry>> {
         let rel_path = file_path.strip_prefix(root_dir).unwrap_or(file_path);
         let file_key = rel_path.to_string_lossy().to_string();
 
-        let mut index = self.load_index()?;
-
-        // Only record delete if we have history for this file
-        let has_history = index.history.iter().any(|e| e.file == file_key);
-        if !has_history {
+        if !view.last_by_file.contains_key(&file_key) {
             return Ok(None);
         }
 
@@ -187,7 +241,7 @@ impl Storage {
         };
 
         index.history.push(entry.clone());
-        self.save_index(&index)?;
+        view.update_last_for_file(entry.file.clone(), index.history.len() - 1);
         Ok(Some(entry))
     }
 
@@ -235,13 +289,13 @@ impl Storage {
         }
         let count = files_to_delete.len();
         if count > 0 {
-            self.trim_history(&mut index);
+            let _ = self.trim_history(&mut index);
             self.save_index(&index)?;
         }
         Ok(count)
     }
 
-    fn trim_history(&self, index: &mut Index) {
+    fn trim_history(&self, index: &mut Index) -> bool {
         use std::collections::HashMap;
 
         // Count entries per file
@@ -257,6 +311,7 @@ impl Storage {
             .map(|(&file, _)| file.to_string())
             .collect();
 
+        let mut removed = false;
         for file in files_to_trim {
             let mut count = 0;
             let mut to_remove = Vec::new();
@@ -274,8 +329,10 @@ impl Storage {
             // Remove from end to start to preserve indices
             for i in to_remove {
                 index.history.remove(i);
+                removed = true;
             }
         }
+        removed
     }
 
     /// Read the raw bytes of a snapshot by its full checksum.
