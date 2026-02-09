@@ -218,6 +218,12 @@ impl Storage {
         }
 
         for file_key in &files_to_delete {
+            if matches!(
+                self.get_last_entry_for_file(&index, file_key),
+                Some(last) if last.op == Operation::Delete
+            ) {
+                continue;
+            }
             let entry = HistoryEntry {
                 timestamp: Utc::now(),
                 op: Operation::Delete,

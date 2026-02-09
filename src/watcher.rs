@@ -55,7 +55,7 @@ impl FileWatcher {
     }
 
     fn handle_event(&self, event: Event, task_tx: &mpsc::Sender<WorkerTask>) {
-        use notify::event::ModifyKind;
+        use notify::event::{ModifyKind, RenameMode};
 
         if matches!(event.kind, notify::EventKind::Remove(_)) {
             // Direct removal (e.g., `rm` command). Use DeletePrefix so directory removal
@@ -65,37 +65,61 @@ impl FileWatcher {
                     let _ = task_tx.send(WorkerTask::DeletePrefix(path));
                 }
             }
-        } else if matches!(event.kind, notify::EventKind::Modify(ModifyKind::Name(_))) {
-            // Rename/move events.  Support directory rename: from/to paths,
-            // and single-path "disappeared" or "directory appeared".
+        } else if let notify::EventKind::Modify(ModifyKind::Name(mode)) = event.kind {
+            // Rename/move events. Treat RenameMode to avoid relying on filesystem timing.
             let paths = event.paths;
-            if paths.len() >= 2 {
-                let from = &paths[0];
-                let to = &paths[1];
-                if !from.exists() && to.exists() && to.is_dir() {
-                    // Directory rename: record deletes under old path, snapshot all under new path.
-                    if from.starts_with(&self.root_dir) {
-                        let _ = task_tx.send(WorkerTask::DeletePrefix(from.clone()));
+            let handle_from = |path: &PathBuf, task_tx: &mpsc::Sender<WorkerTask>| {
+                if path.starts_with(&self.root_dir) {
+                    let _ = task_tx.send(WorkerTask::DeletePrefix(path.clone()));
+                }
+            };
+            let handle_to = |path: &PathBuf, task_tx: &mpsc::Sender<WorkerTask>| {
+                if !path.starts_with(&self.root_dir) {
+                    return;
+                }
+                if path.is_dir() {
+                    Self::walk_dir_and_snapshot(self, path, task_tx);
+                } else if path.is_file() && self.should_watch(path) {
+                    let _ = task_tx.send(WorkerTask::Snapshot(path.clone()));
+                }
+            };
+
+            match mode {
+                RenameMode::From => {
+                    for path in &paths {
+                        handle_from(path, task_tx);
                     }
-                    Self::walk_dir_and_snapshot(self, to, task_tx);
-                } else {
-                    for path in paths {
-                        if path.is_file() && self.should_watch(&path) {
-                            let _ = task_tx.send(WorkerTask::Snapshot(path));
-                        } else if !path.exists() && path.starts_with(&self.root_dir) {
-                            let _ = task_tx.send(WorkerTask::DeletePrefix(path));
+                }
+                RenameMode::To => {
+                    for path in &paths {
+                        handle_to(path, task_tx);
+                    }
+                }
+                RenameMode::Both => {
+                    if paths.len() >= 2 {
+                        let from = &paths[0];
+                        let to = &paths[1];
+                        handle_from(from, task_tx);
+                        handle_to(to, task_tx);
+                    } else {
+                        for path in &paths {
+                            handle_from(path, task_tx);
+                            handle_to(path, task_tx);
                         }
                     }
                 }
-            } else {
-                for path in paths {
-                    if !path.exists() && path.starts_with(&self.root_dir) {
-                        let _ = task_tx.send(WorkerTask::DeletePrefix(path));
-                    } else if path.exists() && path.is_dir() {
-                        Self::walk_dir_and_snapshot(self, &path, task_tx);
-                    } else if path.is_file() && self.should_watch(&path) {
-                        let _ = task_tx.send(WorkerTask::Snapshot(path));
+                _ => {
+                    for path in &paths {
+                        handle_from(path, task_tx);
+                        handle_to(path, task_tx);
                     }
+                }
+            }
+        } else if matches!(event.kind, notify::EventKind::Create(_)) {
+            // Ensure newly created directories are scanned in case file events are missed.
+            for path in event.paths {
+                if path.is_dir() && path.starts_with(&self.root_dir) {
+                    Self::walk_dir_and_snapshot(self, &path, task_tx);
                 }
             }
         } else if Self::is_snapshot_trigger(&event.kind) {
