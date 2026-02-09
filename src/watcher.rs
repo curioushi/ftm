@@ -34,16 +34,35 @@ impl FileWatcher {
     }
 
     fn handle_event(&self, event: Event, task_tx: &mpsc::Sender<WorkerTask>) {
-        if Self::is_snapshot_trigger(&event.kind) {
-            for path in event.paths {
-                if path.is_file() && self.should_watch(&path) {
-                    let _ = task_tx.send(WorkerTask::Snapshot(path));
-                }
-            }
-        } else if matches!(event.kind, notify::EventKind::Remove(_)) {
+        use notify::event::ModifyKind;
+
+        if matches!(event.kind, notify::EventKind::Remove(_)) {
+            // Direct removal (e.g., `rm` command)
             for path in event.paths {
                 if self.should_watch(&path) {
                     let _ = task_tx.send(WorkerTask::Delete(path));
+                }
+            }
+        } else if matches!(event.kind, notify::EventKind::Modify(ModifyKind::Name(_))) {
+            // Rename/move events.  File managers (e.g. Finder on macOS,
+            // Nautilus on Linux, Explorer on Windows) often "delete" by
+            // moving files to a trash folder, which the OS reports as a
+            // rename rather than a removal.  If the file no longer exists
+            // at its original path, treat it as a delete; if a new file
+            // appears (moved into the watched tree), snapshot it.
+            for path in event.paths {
+                if self.should_watch(&path) {
+                    if path.is_file() {
+                        let _ = task_tx.send(WorkerTask::Snapshot(path));
+                    } else if !path.exists() {
+                        let _ = task_tx.send(WorkerTask::Delete(path));
+                    }
+                }
+            }
+        } else if Self::is_snapshot_trigger(&event.kind) {
+            for path in event.paths {
+                if path.is_file() && self.should_watch(&path) {
+                    let _ = task_tx.send(WorkerTask::Snapshot(path));
                 }
             }
         }

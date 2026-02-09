@@ -887,6 +887,150 @@ mod watcher_tests {
     }
 }
 
+mod rename_tests {
+    use super::*;
+
+    /// Simulate file-manager "delete" (e.g. Finder, Nautilus, Explorer):
+    /// move (rename) a tracked file out of the watched directory.
+    /// The watcher should detect this as a delete.
+    #[test]
+    fn test_file_moved_out_detected_as_delete() {
+        let dir = setup_test_dir();
+        // Create a directory outside the watched tree to move files into
+        // (simulates Trash / Recycle Bin or any external location).
+        let outside = tempfile::tempdir().unwrap();
+
+        let (mut server, _port) = start_server_and_checkout(dir.path());
+        let file_path = dir.path().join("finder_del.txt");
+
+        // Create the file so watcher records it
+        std::fs::write(&file_path, "will be moved to trash").unwrap();
+        assert!(
+            wait_for_index(dir.path(), "finder_del.txt", 1, 2000),
+            "Initial create should be recorded"
+        );
+
+        // Move the file out of the watched directory (mimics move-to-trash)
+        let dest = outside.path().join("finder_del.txt");
+        std::fs::rename(&file_path, &dest).unwrap();
+
+        assert!(
+            wait_for_index(dir.path(), "finder_del.txt", 2, 4000),
+            "Move-out (rename) should be recorded as delete"
+        );
+
+        let index = load_test_index(dir.path());
+        let entries: Vec<_> = index
+            .history
+            .iter()
+            .filter(|e| e.file == "finder_del.txt")
+            .collect();
+        assert_eq!(entries.len(), 2, "Should have 2 entries (create + delete)");
+        assert_eq!(entries[0].op, "create");
+        assert_eq!(entries[1].op, "delete");
+        assert!(
+            entries[1].checksum.is_none(),
+            "Delete should have no checksum"
+        );
+
+        stop_server(&mut server);
+    }
+
+    /// Move a file from outside into the watched directory.
+    /// The watcher should detect this as a new file (create/snapshot).
+    #[test]
+    fn test_file_moved_in_detected_as_create() {
+        let dir = setup_test_dir();
+        let outside = tempfile::tempdir().unwrap();
+
+        let (mut server, _port) = start_server_and_checkout(dir.path());
+
+        // Create a file outside the watched directory
+        let external_file = outside.path().join("incoming.txt");
+        std::fs::write(&external_file, "moved in from outside").unwrap();
+
+        // Move it into the watched directory
+        let dest = dir.path().join("incoming.txt");
+        std::fs::rename(&external_file, &dest).unwrap();
+
+        assert!(
+            wait_for_index(dir.path(), "incoming.txt", 1, 4000),
+            "Move-in (rename) should be recorded as create"
+        );
+
+        let index = load_test_index(dir.path());
+        let entry = index
+            .history
+            .iter()
+            .find(|e| e.file == "incoming.txt")
+            .expect("incoming.txt should have a history entry");
+        assert_eq!(entry.op, "create");
+        assert!(
+            entry.checksum.is_some(),
+            "Create entry should have a checksum"
+        );
+
+        stop_server(&mut server);
+    }
+
+    /// Rename a file within the watched directory.  The watcher should record
+    /// a delete for the old name and a create for the new name.
+    #[test]
+    fn test_rename_within_watched_dir() {
+        let dir = setup_test_dir();
+        let (mut server, _port) = start_server_and_checkout(dir.path());
+
+        let old_path = dir.path().join("before.txt");
+        std::fs::write(&old_path, "rename me").unwrap();
+        assert!(
+            wait_for_index(dir.path(), "before.txt", 1, 2000),
+            "Initial create should be recorded"
+        );
+
+        // Rename within the watched directory
+        let new_path = dir.path().join("after.txt");
+        std::fs::rename(&old_path, &new_path).unwrap();
+
+        assert!(
+            wait_for_index(dir.path(), "before.txt", 2, 4000),
+            "Old name should get a delete entry"
+        );
+        assert!(
+            wait_for_index(dir.path(), "after.txt", 1, 4000),
+            "New name should get a create entry"
+        );
+
+        let index = load_test_index(dir.path());
+
+        let old_entries: Vec<_> = index
+            .history
+            .iter()
+            .filter(|e| e.file == "before.txt")
+            .collect();
+        assert_eq!(
+            old_entries.len(),
+            2,
+            "Old name should have 2 entries (create + delete)"
+        );
+        assert_eq!(old_entries[0].op, "create");
+        assert_eq!(old_entries[1].op, "delete");
+
+        let new_entries: Vec<_> = index
+            .history
+            .iter()
+            .filter(|e| e.file == "after.txt")
+            .collect();
+        assert_eq!(
+            new_entries.len(),
+            1,
+            "New name should have 1 entry (create)"
+        );
+        assert_eq!(new_entries[0].op, "create");
+
+        stop_server(&mut server);
+    }
+}
+
 mod dedup_tests {
     use super::*;
 
