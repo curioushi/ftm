@@ -154,6 +154,8 @@ input[type='text']:focus {
 }
 
 #sidebar-header {
+  min-height: 36px;
+  height: 36px;
   padding: 4px 10px;
   font-weight: 600;
   font-size: 11px;
@@ -264,19 +266,34 @@ input[type='text']:focus {
   overflow: hidden auto;
 }
 
-/* -- Resize handle -- */
+/* -- Resize handle: 0 visual width, keep hit area via padding + negative margin -- */
 #resize-handle {
-  width: 4px;
+  width: 8px;
+  margin-left: -4px;
+  margin-right: -4px;
   cursor: col-resize;
   background: transparent;
   flex-shrink: 0;
   transition: background 0.15s;
   z-index: 5;
+  position: relative;
 }
 
-#resize-handle:hover,
-#resize-handle.dragging {
+#resize-handle::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 0;
   background: var(--blue);
+  transform: translateX(-50%);
+  transition: width 0.15s;
+}
+
+#resize-handle:hover::after,
+#resize-handle.dragging::after {
+  width: 1px;
 }
 
 body.resizing {
@@ -381,6 +398,8 @@ body.resizing * {
 }
 
 #diff-header {
+  min-height: 36px;
+  height: 36px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -513,19 +532,34 @@ body.resizing * {
   text-decoration: underline;
 }
 
-/* -- Timeline vertical resize handle -- */
+/* -- Timeline vertical resize handle: 0 visual height, keep hit area -- */
 #timeline-resize-handle {
-  height: 4px;
+  height: 8px;
+  margin-top: -4px;
+  margin-bottom: -4px;
   cursor: row-resize;
   background: transparent;
   flex-shrink: 0;
   transition: background 0.15s;
   z-index: 5;
+  position: relative;
 }
 
-#timeline-resize-handle:hover,
-#timeline-resize-handle.dragging {
+#timeline-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 0;
   background: var(--blue);
+  transform: translateY(-50%);
+  transition: height 0.15s;
+}
+
+#timeline-resize-handle:hover::after,
+#timeline-resize-handle.dragging::after {
+  height: 1px;
 }
 
 body.tl-resizing {
@@ -649,18 +683,34 @@ body.tl-resizing * {
   background: var(--bg-active);
 }
 
+/* -- Timeline lanes resize: 0 visual width, keep hit area -- */
 #timeline-lanes-resize {
-  width: 4px;
+  width: 8px;
+  margin-left: -4px;
+  margin-right: -4px;
   cursor: col-resize;
   background: transparent;
   flex-shrink: 0;
   transition: background 0.15s;
   z-index: 5;
+  position: relative;
 }
 
-#timeline-lanes-resize:hover,
-#timeline-lanes-resize.dragging {
+#timeline-lanes-resize::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 0;
   background: var(--blue);
+  transform: translateX(-50%);
+  transition: width 0.15s;
+}
+
+#timeline-lanes-resize:hover::after,
+#timeline-lanes-resize.dragging::after {
+  width: 1px;
 }
 
 body.tl-lanes-resizing {
