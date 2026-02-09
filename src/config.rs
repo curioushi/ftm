@@ -49,6 +49,10 @@ impl Default for Config {
                     "*.toml".into(),
                     "*.js".into(),
                     "*.ts".into(),
+                    "*.vision".into(),
+                    "*.task".into(),
+                    "*.conf".into(),
+                    "*.ini".into(),
                 ],
                 exclude: vec![
                     "**/target/**".into(),

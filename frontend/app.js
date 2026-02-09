@@ -16,6 +16,7 @@
   let lastDiffToChecksum = null;
   let visibleFilePaths = [];
   let diffSingleMode = false;
+  let selectedRestoreChecksum = null;
 
   // ---- DOM refs ------------------------------------------------------------
   const $filter = document.getElementById('filter');
@@ -24,6 +25,7 @@
   const $diffViewer = document.getElementById('diff-viewer');
   const $diffTitle = document.getElementById('diff-title');
   const $diffMeta = document.getElementById('diff-meta');
+  const $btnRestore = document.getElementById('btn-restore');
   const $timeline = document.getElementById('timeline');
   const $timelineLabel = document.getElementById('timeline-label');
   const $btnScan = document.getElementById('btn-scan');
@@ -74,18 +76,58 @@
     }
   }
 
+  function createFilterMatcher(rawQuery) {
+    const query = rawQuery.trim().toLowerCase().replace(/\\/g, '/');
+    if (!query) {
+      return null;
+    }
+    const hasGlob = /[*?]/.test(query);
+    if (!hasGlob) {
+      return (path) => path.toLowerCase().includes(query);
+    }
+    const regex = globToRegex(query);
+    return (path) => regex.test(path.toLowerCase().replace(/\\/g, '/'));
+  }
+
+  function globToRegex(pattern) {
+    let out = '^';
+    for (let i = 0; i < pattern.length; i++) {
+      const ch = pattern[i];
+      if (ch === '*') {
+        if (pattern[i + 1] === '*') {
+          out += '.*';
+          i++;
+        } else {
+          out += '[^/]*';
+        }
+        continue;
+      }
+      if (ch === '?') {
+        out += '[^/]';
+        continue;
+      }
+      if ('\\.^$+()[]{}|'.includes(ch)) {
+        out += '\\' + ch;
+        continue;
+      }
+      out += ch;
+    }
+    out += '$';
+    return new RegExp(out);
+  }
+
   // Filter tree: return new tree with only matching files and their ancestors
-  function filterTree(nodes, query, prefix) {
+  function filterTree(nodes, matcher, prefix) {
     const result = [];
     for (const node of nodes) {
       const fullPath = prefix ? prefix + '/' + node.name : node.name;
       if (node.children) {
-        const filteredChildren = filterTree(node.children, query, fullPath);
+        const filteredChildren = filterTree(node.children, matcher, fullPath);
         if (filteredChildren.length > 0) {
           result.push({ name: node.name, children: filteredChildren });
         }
       } else {
-        if (fullPath.toLowerCase().includes(query)) {
+        if (matcher(fullPath)) {
           result.push({ name: node.name, count: node.count });
         }
       }
@@ -94,8 +136,8 @@
   }
 
   function renderFileList() {
-    const query = $filter.value.toLowerCase();
-    const tree = query ? filterTree(fileTree, query, '') : fileTree;
+    const matcher = createFilterMatcher($filter.value);
+    const tree = matcher ? filterTree(fileTree, matcher, '') : fileTree;
 
     $fileList.innerHTML = '';
     visibleFilePaths = [];
@@ -106,7 +148,7 @@
     }
 
     const frag = document.createDocumentFragment();
-    renderTreeNodes(frag, tree, '', 0, !!query);
+    renderTreeNodes(frag, tree, '', 0, !!matcher);
     $fileList.appendChild(frag);
     scrollFileToActive();
   }
@@ -223,6 +265,8 @@
 
   async function selectFile(path) {
     currentFile = path;
+    selectedRestoreChecksum = null;
+    updateRestoreButton();
     renderFileList();
     $diffTitle.textContent = path;
     $diffMeta.textContent = '';
@@ -236,13 +280,23 @@
         selectEntry(historyEntries.length - 1);
       } else {
         $diffViewer.innerHTML = '<div class="empty-state">No history</div>';
+        updateRestoreButton();
       }
     } catch (e) {
       $diffViewer.innerHTML = '<div class="empty-state">' + escapeHtml(e.message) + '</div>';
+      updateRestoreButton();
     }
   }
 
   // ---- Timeline ------------------------------------------------------------
+  function updateRestoreButton() {
+    if (!currentFile || !selectedRestoreChecksum) {
+      $btnRestore.classList.remove('is-visible');
+      return;
+    }
+    $btnRestore.classList.add('is-visible');
+  }
+
   function renderTimeline() {
     $timeline.innerHTML = '';
     $timelineLabel.textContent = '';
@@ -288,6 +342,8 @@
   async function selectEntry(idx) {
     activeEntryIdx = idx;
     const entry = historyEntries[idx];
+    selectedRestoreChecksum = entry && entry.checksum ? entry.checksum : null;
+    updateRestoreButton();
 
     // Update timeline active state
     const nodes = $timeline.querySelectorAll('.tl-node');
@@ -658,6 +714,27 @@
     } finally {
       $btnScan.disabled = false;
       $btnScan.textContent = 'Scan';
+    }
+  });
+
+  // ---- Restore button ------------------------------------------------------
+  $btnRestore.addEventListener('click', async () => {
+    if (!currentFile || !selectedRestoreChecksum) return;
+    const shortChecksum = selectedRestoreChecksum.slice(0, 12);
+    const ok = window.confirm('Restore to version ' + shortChecksum + '?');
+    if (!ok) return;
+    $btnRestore.disabled = true;
+    try {
+      await apiPost('/api/restore', {
+        file: currentFile,
+        checksum: selectedRestoreChecksum,
+      });
+      $status.textContent = 'Restore requested for ' + currentFile;
+      await selectFile(currentFile);
+    } catch (e) {
+      $status.textContent = e.message;
+    } finally {
+      $btnRestore.disabled = false;
     }
   });
 

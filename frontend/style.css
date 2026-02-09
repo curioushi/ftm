@@ -299,6 +299,20 @@ body.resizing * {
   color: var(--fg-dim);
 }
 
+#diff-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#btn-restore {
+  display: none;
+}
+
+#btn-restore.is-visible {
+  display: inline-block;
+}
+
 #diff-viewer {
   flex: 1;
   overflow: auto;
