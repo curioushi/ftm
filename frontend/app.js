@@ -718,8 +718,10 @@
     ctx.lineTo(w, RULER_HEIGHT - 0.5);
     ctx.stroke();
 
-    // Choose tick interval
+    // Choose tick interval (smallest first so zoom-in picks second-level)
     const tickIntervals = [
+      { ms: 15 * 1000, label: '15s' }, // 15 sec
+      { ms: 30 * 1000, label: '30s' }, // 30 sec
       { ms: 60 * 1000, label: 'min' }, // 1 min
       { ms: 5 * 60 * 1000, label: '5min' }, // 5 min
       { ms: 15 * 60 * 1000, label: '15min' }, // 15 min
@@ -772,6 +774,13 @@
           (d.getMonth() + 1).toString().padStart(2, '0') +
           '/' +
           d.getDate().toString().padStart(2, '0');
+      } else if (tickType === '15s' || tickType === '30s') {
+        label =
+          d.getHours().toString().padStart(2, '0') +
+          ':' +
+          d.getMinutes().toString().padStart(2, '0') +
+          ':' +
+          d.getSeconds().toString().padStart(2, '0');
       } else {
         label =
           d.getHours().toString().padStart(2, '0') +
