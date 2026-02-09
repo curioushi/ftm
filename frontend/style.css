@@ -315,6 +315,14 @@ body.resizing * {
   table-layout: fixed;
 }
 
+.diff-col-gutter {
+  width: 50px;
+}
+
+.diff-col-code {
+  width: auto;
+}
+
 .diff-gutter {
   width: 50px;
   text-align: right;
@@ -341,6 +349,13 @@ body.resizing * {
   text-overflow: ellipsis;
 }
 
+.diff-single .diff-col-gutter-old,
+.diff-single .diff-col-code-old,
+.diff-single .diff-gutter-old,
+.diff-single .diff-code-old {
+  display: none;
+}
+
 .diff-line-insert {
   background: var(--diff-insert-bg);
 }
@@ -363,16 +378,19 @@ body.resizing * {
 
 .diff-separator {
   background: var(--bg-surface);
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
+  box-shadow:
+    0 -1px 0 var(--border),
+    0 1px 0 var(--border);
 }
 
 .diff-separator td {
-  padding: 4px 12px;
+  padding: 0 12px;
   text-align: center;
   color: var(--fg-dim);
   font-size: 11px;
   cursor: pointer;
+  line-height: 20px;
+  height: 20px;
 }
 
 .diff-separator td:hover {

@@ -15,6 +15,7 @@
   let lastDiffFromChecksum = null;
   let lastDiffToChecksum = null;
   let visibleFilePaths = [];
+  let diffSingleMode = false;
 
   // ---- DOM refs ------------------------------------------------------------
   const $filter = document.getElementById('filter');
@@ -350,6 +351,7 @@
     diffRows = [];
     lastDiffFromChecksum = fromChecksum || '';
     lastDiffToChecksum = toChecksum || '';
+    diffSingleMode = !fromChecksum;
 
     if (diff.hunks.length === 0) {
       $diffViewer.innerHTML = '<div class="empty-state">No changes</div>';
@@ -470,7 +472,7 @@
     vsSpacer.style.position = 'relative';
 
     vsContent = document.createElement('table');
-    vsContent.className = 'diff-table';
+    vsContent.className = 'diff-table' + (diffSingleMode ? ' diff-single' : '');
     vsContent.style.position = 'absolute';
     vsContent.style.left = '0';
     vsContent.style.right = '0';
@@ -478,13 +480,13 @@
 
     const colgroup = document.createElement('colgroup');
     const colGutterOld = document.createElement('col');
-    colGutterOld.className = 'diff-col-gutter';
+    colGutterOld.className = 'diff-col-gutter diff-col-gutter-old';
     const colCodeOld = document.createElement('col');
-    colCodeOld.className = 'diff-col-code';
+    colCodeOld.className = 'diff-col-code diff-col-code-old';
     const colGutterNew = document.createElement('col');
-    colGutterNew.className = 'diff-col-gutter';
+    colGutterNew.className = 'diff-col-gutter diff-col-gutter-new';
     const colCodeNew = document.createElement('col');
-    colCodeNew.className = 'diff-col-code';
+    colCodeNew.className = 'diff-col-code diff-col-code-new';
     colgroup.appendChild(colGutterOld);
     colgroup.appendChild(colCodeOld);
     colgroup.appendChild(colGutterNew);
@@ -523,6 +525,7 @@
     vsContent.style.top = startIdx * ROW_HEIGHT + 'px';
 
     // Build rows
+    const showOld = !diffSingleMode;
     const frag = document.createDocumentFragment();
     for (let i = startIdx; i < endIdx; i++) {
       const row = diffRows[i];
@@ -532,20 +535,12 @@
       if (row.type === 'separator') {
         tr.className = 'diff-separator';
         const td = document.createElement('td');
-        td.colSpan = 4;
+        td.colSpan = showOld ? 4 : 2;
         td.textContent = row.text;
         td.addEventListener('click', () => expandSeparator(i));
         tr.appendChild(td);
       } else {
         tr.className = 'diff-line-' + row.type;
-
-        const gutterOld = document.createElement('td');
-        gutterOld.className = 'diff-gutter diff-gutter-old';
-        gutterOld.textContent = row.oldNum != null ? row.oldNum : '';
-
-        const codeOld = document.createElement('td');
-        codeOld.className = 'diff-code diff-code-old';
-
         const gutterNew = document.createElement('td');
         gutterNew.className = 'diff-gutter diff-gutter-new';
         gutterNew.textContent = row.newNum != null ? row.newNum : '';
@@ -553,19 +548,35 @@
         const codeNew = document.createElement('td');
         codeNew.className = 'diff-code diff-code-new';
 
-        if (row.type === 'equal') {
-          codeOld.textContent = row.content;
-          codeNew.textContent = row.content;
-        } else if (row.type === 'delete') {
-          codeOld.textContent = row.content;
-          codeNew.textContent = '';
-        } else if (row.type === 'insert') {
-          codeOld.textContent = '';
-          codeNew.textContent = row.content;
+        if (showOld) {
+          const gutterOld = document.createElement('td');
+          gutterOld.className = 'diff-gutter diff-gutter-old';
+          gutterOld.textContent = row.oldNum != null ? row.oldNum : '';
+
+          const codeOld = document.createElement('td');
+          codeOld.className = 'diff-code diff-code-old';
+
+          if (row.type === 'equal') {
+            codeOld.textContent = row.content;
+            codeNew.textContent = row.content;
+          } else if (row.type === 'delete') {
+            codeOld.textContent = row.content;
+            codeNew.textContent = '';
+          } else if (row.type === 'insert') {
+            codeOld.textContent = '';
+            codeNew.textContent = row.content;
+          }
+
+          tr.appendChild(gutterOld);
+          tr.appendChild(codeOld);
+        } else {
+          if (row.type === 'delete') {
+            codeNew.textContent = '';
+          } else {
+            codeNew.textContent = row.content;
+          }
         }
 
-        tr.appendChild(gutterOld);
-        tr.appendChild(codeOld);
         tr.appendChild(gutterNew);
         tr.appendChild(codeNew);
       }

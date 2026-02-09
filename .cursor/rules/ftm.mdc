@@ -94,6 +94,13 @@ settings:
 Event colors: Create=green, Modify=blue, Delete=red
 ```
 
+### Web UI Lint
+
+```
+pnpm lint  # lint js/css
+pnpm format  # prettier
+```
+
 ## Testing
 
 Run tests (release build with debuginfo, single-threaded):
