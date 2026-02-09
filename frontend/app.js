@@ -839,40 +839,52 @@
         ctx.stroke();
       }
 
-      // Draw nodes
+      // Draw nodes (skip the active node so we can draw it on top later)
       for (const ve of visibleEntries) {
         const { x, ei, entry } = ve;
-        // Skip nodes that are way off screen
         if (x < -NODE_RADIUS * 2 || x > w + NODE_RADIUS * 2) continue;
+        if (tlActiveNode && tlActiveNode.laneIdx === li && tlActiveNode.entryIdx === ei) continue;
 
         const color = opColor(entry.op);
-        const isActive =
-          tlActiveNode && tlActiveNode.laneIdx === li && tlActiveNode.entryIdx === ei;
         const isHovered =
           tlHoveredNode && tlHoveredNode.laneIdx === li && tlHoveredNode.entryIdx === ei;
 
-        // Draw node
         ctx.beginPath();
         ctx.arc(x, centerY, isHovered ? NODE_RADIUS + 1.5 : NODE_RADIUS, 0, Math.PI * 2);
+        ctx.fillStyle = COLORS.bg;
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    }
 
-        if (isActive) {
+    // Draw the active node on top so it is never covered by others
+    if (tlActiveNode) {
+      const li = tlActiveNode.laneIdx;
+      const lane = tlLanes[li];
+      const laneY = lanesAreaTop + li * LANE_HEIGHT - tlScrollY;
+      if (laneY + LANE_HEIGHT >= lanesAreaTop && laneY <= h) {
+        const centerY = laneY + LANE_HEIGHT / 2;
+        const entry = tlActiveNode.entry;
+        const ts = new Date(entry.timestamp).getTime();
+        const x = timeToX(ts, w);
+        if (x >= -NODE_RADIUS * 2 && x <= w + NODE_RADIUS * 2) {
+          const color = opColor(entry.op);
+          const isHovered =
+            tlHoveredNode && tlHoveredNode.laneIdx === li && tlHoveredNode.entryIdx === tlActiveNode.entryIdx;
+
+          ctx.beginPath();
+          ctx.arc(x, centerY, isHovered ? NODE_RADIUS + 1.5 : NODE_RADIUS, 0, Math.PI * 2);
           ctx.fillStyle = color;
           ctx.fill();
-          // Active ring
           ctx.strokeStyle = COLORS.fgBright;
           ctx.lineWidth = 2;
           ctx.stroke();
-          // White center highlight
           ctx.beginPath();
           ctx.arc(x, centerY, 2, 0, Math.PI * 2);
           ctx.fillStyle = COLORS.fgBright;
           ctx.fill();
-        } else {
-          ctx.fillStyle = COLORS.bg;
-          ctx.fill();
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 2;
-          ctx.stroke();
         }
       }
     }
