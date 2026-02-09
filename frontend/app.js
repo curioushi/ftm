@@ -706,11 +706,10 @@
       const result = await apiPost('/api/scan');
       $status.textContent =
         'Scan: +' + result.created + ' ~' + result.modified + ' -' + result.deleted;
-      await loadFiles();
-      // Refresh current file if selected
-      if (currentFile) {
-        await selectFile(currentFile);
-      }
+      $btnScan.disabled = false;
+      $btnScan.textContent = 'Scan';
+      setTimeout(() => location.reload(), 200);
+      return;
     } catch (e) {
       $status.textContent = e.message;
     } finally {
@@ -732,7 +731,9 @@
         checksum: selectedRestoreChecksum,
       });
       $status.textContent = 'Restore requested for ' + currentFile;
-      await selectFile(currentFile);
+      $btnRestore.disabled = false;
+      setTimeout(() => location.reload(), 200);
+      return;
     } catch (e) {
       $status.textContent = e.message;
     } finally {
