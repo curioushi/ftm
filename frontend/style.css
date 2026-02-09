@@ -258,6 +258,11 @@ body.resizing * {
   color: var(--fg-bright);
 }
 
+.tree-file.selected {
+  background: rgb(59 130 246 / 12%);
+  color: var(--fg-bright);
+}
+
 .tree-file .file-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -412,16 +417,80 @@ body.resizing * {
   text-decoration: underline;
 }
 
+/* -- Timeline vertical resize handle -- */
+#timeline-resize-handle {
+  height: 4px;
+  cursor: row-resize;
+  background: transparent;
+  flex-shrink: 0;
+  transition: background 0.15s;
+  z-index: 5;
+}
+
+#timeline-resize-handle:hover,
+#timeline-resize-handle.dragging {
+  background: var(--blue);
+}
+
+body.tl-resizing {
+  cursor: row-resize !important;
+  user-select: none !important;
+}
+
+body.tl-resizing * {
+  cursor: row-resize !important;
+}
+
 /* -- Timeline -- */
 #timeline-bar {
   border-top: 1px solid var(--border);
-  padding: 8px 12px;
   flex-shrink: 0;
   background: var(--bg-surface);
   display: flex;
+  flex-direction: column;
+  height: 140px;
+  min-height: 60px;
+  max-height: 50vh;
+  overflow: hidden;
+}
+
+#timeline-toolbar {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
   gap: 12px;
-  min-height: 44px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+#timeline-range-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+.tl-range-btn {
+  padding: 2px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg-dim);
+  cursor: pointer;
+  transition:
+    background 0.1s,
+    color 0.1s,
+    border-color 0.1s;
+}
+
+.tl-range-btn:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.tl-range-btn.active {
+  background: var(--bg-active);
+  color: var(--fg-bright);
+  border-color: var(--fg-dim);
 }
 
 #timeline-label {
@@ -431,88 +500,118 @@ body.resizing * {
   flex-shrink: 0;
 }
 
-#timeline {
+#timeline-body {
   flex: 1;
   display: flex;
-  align-items: center;
-  gap: 2px;
-  overflow: auto hidden;
+  min-height: 0;
   position: relative;
-  height: 28px;
+  overflow: hidden;
 }
 
-.tl-track {
-  flex: 1;
-  height: 2px;
-  background: var(--border);
-  position: relative;
-  min-width: 40px;
-}
-
-.tl-node {
-  width: 12px;
-  height: 12px;
-  border: 2px solid var(--border);
-  background: var(--bg);
-  cursor: pointer;
+#timeline-lanes {
+  width: 120px;
+  min-width: 80px;
   flex-shrink: 0;
-  position: relative;
-  transition: transform 0.1s;
+  overflow: hidden auto;
+  border-right: 1px solid var(--border);
+  scrollbar-width: none;
 }
 
-.tl-node:hover {
-  transform: scale(1.3);
+#timeline-lanes::-webkit-scrollbar {
+  display: none;
+}
+
+.tl-lane-spacer {
+  position: sticky;
+  top: 0;
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
   z-index: 1;
 }
 
-.tl-node.active {
-  border-color: var(--fg-bright);
-  background: var(--fg-bright);
+.tl-lane-label {
+  height: 24px;
+  line-height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  border-bottom: 1px solid transparent;
 }
 
-.tl-node.op-create {
-  border-color: var(--green);
+.tl-lane-label:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
-.tl-node.op-create.active {
-  background: var(--green);
+.tl-lane-label.active {
+  color: var(--fg-bright);
+  background: var(--bg-active);
 }
 
-.tl-node.op-modify {
-  border-color: var(--blue);
+#timeline-lanes-resize {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  flex-shrink: 0;
+  transition: background 0.15s;
+  z-index: 5;
 }
 
-.tl-node.op-modify.active {
+#timeline-lanes-resize:hover,
+#timeline-lanes-resize.dragging {
   background: var(--blue);
 }
 
-.tl-node.op-delete {
-  border-color: var(--red);
+body.tl-lanes-resizing {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
-.tl-node.op-delete.active {
-  background: var(--red);
+body.tl-lanes-resizing * {
+  cursor: col-resize !important;
 }
 
-.tl-tooltip {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
+#timeline-canvas {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  cursor: grab;
+}
+
+#timeline-canvas.grabbing {
+  cursor: grabbing;
+}
+
+#timeline-tooltip {
+  position: fixed;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-bottom: none;
   padding: 4px 8px;
   font-size: 11px;
   white-space: nowrap;
   pointer-events: none;
   display: none;
-  z-index: 10;
+  z-index: 100;
   color: var(--fg);
 }
 
-.tl-node:hover .tl-tooltip {
+#timeline-tooltip.visible {
   display: block;
+}
+
+/* Timeline drag state on body */
+body.tl-dragging {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
+body.tl-dragging * {
+  cursor: grabbing !important;
 }
 
 /* Empty state */

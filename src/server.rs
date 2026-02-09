@@ -91,6 +91,14 @@ struct HistoryQuery {
 }
 
 #[derive(Deserialize)]
+struct ActivityQuery {
+    /// ISO 8601 timestamp for the start of the time range (inclusive).
+    since: String,
+    /// ISO 8601 timestamp for the end of the time range (inclusive). Defaults to now.
+    until: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct RestoreRequest {
     file: String,
     checksum: String,
@@ -373,6 +381,31 @@ async fn history(
     let entries = storage
         .list_history(&q.file)
         .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(entries))
+}
+
+async fn activity(
+    State(state): State<SharedState>,
+    Query(q): Query<ActivityQuery>,
+) -> Result<Json<Vec<HistoryEntry>>, ApiError> {
+    let (storage, _) = state.storage().await.ok_or_else(not_checked_out)?;
+
+    let since = chrono::DateTime::parse_from_rfc3339(&q.since)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, format!("Invalid 'since': {}", e)))?;
+
+    let until = if let Some(ref u) = q.until {
+        chrono::DateTime::parse_from_rfc3339(u)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .map_err(|e| api_err(StatusCode::BAD_REQUEST, format!("Invalid 'until': {}", e)))?
+    } else {
+        chrono::Utc::now()
+    };
+
+    let entries = storage
+        .list_activity(since, until)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     Ok(Json(entries))
 }
 
@@ -687,6 +720,7 @@ pub async fn serve(port: u16) -> Result<()> {
         .route("/api/checkout", post(checkout))
         .route("/api/files", get(files))
         .route("/api/history", get(history))
+        .route("/api/activity", get(activity))
         .route("/api/restore", post(restore))
         .route("/api/scan", post(scan))
         .route("/api/config", get(config_get).post(config_set))

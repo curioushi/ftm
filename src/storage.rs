@@ -1,6 +1,6 @@
 use crate::types::{FileTreeNode, HistoryEntry, Index, Operation};
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
@@ -372,6 +372,23 @@ impl Storage {
             .history
             .iter()
             .filter(|e| e.file == file_path)
+            .cloned()
+            .collect();
+        Ok(entries)
+    }
+
+    /// Return all history entries within the given time range.
+    /// Both `since` and `until` are inclusive bounds.
+    pub fn list_activity(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<Vec<HistoryEntry>> {
+        let index = self.load_index()?;
+        let entries: Vec<HistoryEntry> = index
+            .history
+            .iter()
+            .filter(|e| e.timestamp >= since && e.timestamp <= until)
             .cloned()
             .collect();
         Ok(entries)

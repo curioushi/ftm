@@ -16,6 +16,9 @@ module.exports = [
         requestAnimationFrame: "readonly",
         setTimeout: "readonly",
         clearTimeout: "readonly",
+        location: "readonly",
+        ResizeObserver: "readonly",
+        Promise: "readonly",
       },
     },
     rules: {

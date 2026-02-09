@@ -46,10 +46,27 @@
         </div>
       </div>
 
+      <div id="timeline-resize-handle"></div>
       <footer id="timeline-bar">
-        <div id="timeline-label"></div>
-        <div id="timeline"></div>
+        <div id="timeline-toolbar">
+          <div id="timeline-range-buttons">
+            <button class="tl-range-btn" data-range="3600000">1h</button>
+            <button class="tl-range-btn" data-range="21600000">6h</button>
+            <button class="tl-range-btn" data-range="86400000">1d</button>
+            <button class="tl-range-btn" data-range="259200000">3d</button>
+            <button class="tl-range-btn" data-range="604800000">7d</button>
+            <button class="tl-range-btn" data-range="2592000000">30d</button>
+            <button class="tl-range-btn" data-range="all">All</button>
+          </div>
+          <div id="timeline-label"></div>
+        </div>
+        <div id="timeline-body">
+          <div id="timeline-lanes"></div>
+          <div id="timeline-lanes-resize"></div>
+          <canvas id="timeline-canvas"></canvas>
+        </div>
       </footer>
+      <div id="timeline-tooltip"></div>
     </div>
 
     <script src="app.js"></script>

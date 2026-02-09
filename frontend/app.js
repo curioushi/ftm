@@ -17,7 +17,53 @@
   let visibleFilePaths = [];
   let diffSingleMode = false;
   let selectedRestoreChecksum = null;
+  let selectedFiles = new Set(); // multi-selected files (ctrl+click)
+  let tlTooltipTimeoutId = null; // timeout for auto-hiding keyboard tooltip
   const SELECTED_FILE_STORAGE_KEY = 'ftm-selected-file';
+  const TL_HEIGHT_STORAGE_KEY = 'ftm-timeline-height';
+  const TL_LANES_WIDTH_STORAGE_KEY = 'ftm-tl-lanes-width';
+
+  // Timeline state
+  let tlViewStart = 0; // ms timestamp (left edge of visible range)
+  let tlViewEnd = 0; // ms timestamp (right edge of visible range)
+  let tlLanes = []; // [{file, entries}] - lanes to display
+  let tlMode = 'single'; // 'single' or 'multi'
+  let tlScrollY = 0; // vertical scroll offset for lanes
+  let tlDragState = null; // {startX, startY, origViewStart, origViewEnd, origScrollY, moved}
+  let tlHoveredNode = null; // {laneIdx, entryIdx, entry, x, y}
+  let tlActiveNode = null; // {laneIdx, entryIdx, entry} - currently selected node
+  let tlRafId = null;
+  let tlActiveRangeBtn = null; // currently active range button element
+
+  // Canvas drawing constants
+  const LANE_HEIGHT = 24;
+  const RULER_HEIGHT = 22;
+  const NODE_RADIUS = 5;
+  const NODE_HIT_RADIUS = 8;
+  const MIN_VIEW_SPAN = 60 * 1000; // 1 minute minimum zoom
+  const ZOOM_FACTOR = 0.15;
+
+  // Colors (must match CSS variables)
+  const COLORS = {
+    bg: '#000',
+    bgSurface: '#0a0a0a',
+    bgHover: '#1a1a1a',
+    bgActive: '#222',
+    fg: '#e0e0e0',
+    fgDim: '#888',
+    fgBright: '#fff',
+    border: '#333',
+    green: '#22c55e',
+    blue: '#3b82f6',
+    red: '#ef4444',
+  };
+
+  function opColor(op) {
+    if (op === 'create') return COLORS.green;
+    if (op === 'modify') return COLORS.blue;
+    if (op === 'delete') return COLORS.red;
+    return COLORS.fgDim;
+  }
 
   // ---- DOM refs ------------------------------------------------------------
   const $filter = document.getElementById('filter');
@@ -27,12 +73,21 @@
   const $diffTitle = document.getElementById('diff-title');
   const $diffMeta = document.getElementById('diff-meta');
   const $btnRestore = document.getElementById('btn-restore');
-  const $timeline = document.getElementById('timeline');
   const $timelineLabel = document.getElementById('timeline-label');
   const $btnScan = document.getElementById('btn-scan');
   const $status = document.getElementById('status');
   const $sidebar = document.getElementById('sidebar');
   const $resizeHandle = document.getElementById('resize-handle');
+
+  // New timeline DOM refs
+  const $timelineBar = document.getElementById('timeline-bar');
+  const $timelineBody = document.getElementById('timeline-body');
+  const $timelineLanes = document.getElementById('timeline-lanes');
+  const $canvas = document.getElementById('timeline-canvas');
+  const $tlTooltip = document.getElementById('timeline-tooltip');
+  const $tlResizeHandle = document.getElementById('timeline-resize-handle');
+  const $tlLanesResize = document.getElementById('timeline-lanes-resize');
+  const ctx = $canvas.getContext('2d');
 
   // ---- API helpers ---------------------------------------------------------
   const API = '';
@@ -154,6 +209,20 @@
     scrollFileToActive();
   }
 
+  /** Collect all file paths under a tree node recursively */
+  function collectFilesUnder(nodes, prefix) {
+    const result = [];
+    for (const node of nodes) {
+      const fullPath = prefix ? prefix + '/' + node.name : node.name;
+      if (node.children) {
+        result.push(...collectFilesUnder(node.children, fullPath));
+      } else {
+        result.push(fullPath);
+      }
+    }
+    return result;
+  }
+
   // Recursively render tree nodes into a parent element
   function renderTreeNodes(parent, nodes, prefix, depth, forceExpand) {
     for (const node of nodes) {
@@ -175,9 +244,9 @@
         nameSpan.className = 'dir-name';
         nameSpan.textContent = node.name;
 
-        dirRow.appendChild(arrow);
-        dirRow.appendChild(nameSpan);
-        dirRow.addEventListener('click', () => {
+        // Arrow click: toggle expand/collapse
+        arrow.addEventListener('click', (e) => {
+          e.stopPropagation();
           if (collapsedDirs.has(fullPath)) {
             collapsedDirs.delete(fullPath);
           } else {
@@ -185,6 +254,23 @@
           }
           renderFileList();
         });
+
+        // Dir name click: select all files under this directory
+        nameSpan.addEventListener('click', (e) => {
+          e.stopPropagation();
+          // Ensure expanded so user can see selected files
+          collapsedDirs.delete(fullPath);
+          const childFiles = collectFilesUnder(node.children, fullPath);
+          if (childFiles.length === 0) return;
+          selectedFiles = new Set(childFiles);
+          currentFile = childFiles[0];
+          rememberSelectedFile(currentFile);
+          renderFileList();
+          selectMultipleFiles(childFiles);
+        });
+
+        dirRow.appendChild(arrow);
+        dirRow.appendChild(nameSpan);
 
         parent.appendChild(dirRow);
 
@@ -194,8 +280,11 @@
         parent.appendChild(childContainer);
       } else {
         // File node
+        const isActive = fullPath === currentFile;
+        const isSelected = selectedFiles.has(fullPath);
         const fileRow = document.createElement('div');
-        fileRow.className = 'tree-file' + (fullPath === currentFile ? ' active' : '');
+        fileRow.className =
+          'tree-file' + (isActive ? ' active' : '') + (isSelected && !isActive ? ' selected' : '');
         fileRow.style.paddingLeft = 8 + depth * 16 + 18 + 'px';
         visibleFilePaths.push(fullPath);
 
@@ -209,7 +298,40 @@
 
         fileRow.appendChild(nameSpan);
         fileRow.appendChild(countSpan);
-        fileRow.addEventListener('click', () => selectFile(fullPath));
+        fileRow.addEventListener('click', (e) => {
+          if (e.ctrlKey || e.metaKey) {
+            // Ctrl/Cmd+click: toggle file in multi-selection
+            if (selectedFiles.has(fullPath)) {
+              selectedFiles.delete(fullPath);
+              // If removing the current file, switch currentFile
+              if (currentFile === fullPath) {
+                const remaining = Array.from(selectedFiles);
+                currentFile = remaining.length > 0 ? remaining[0] : null;
+              }
+            } else {
+              selectedFiles.add(fullPath);
+              // Also add the current single file if this is the first ctrl-click
+              if (currentFile && selectedFiles.size === 1) {
+                selectedFiles.add(currentFile);
+              }
+            }
+            if (selectedFiles.size > 1) {
+              renderFileList();
+              selectMultipleFiles(Array.from(selectedFiles));
+            } else if (selectedFiles.size === 1) {
+              const f = Array.from(selectedFiles)[0];
+              selectedFiles.clear();
+              selectFile(f);
+            } else {
+              selectedFiles.clear();
+              renderFileList();
+            }
+          } else {
+            // Normal click: single file select
+            selectedFiles.clear();
+            selectFile(fullPath);
+          }
+        });
 
         parent.appendChild(fileRow);
       }
@@ -266,6 +388,7 @@
 
   async function selectFile(path) {
     currentFile = path;
+    selectedFiles.clear();
     rememberSelectedFile(path);
     selectedRestoreChecksum = null;
     updateRestoreButton();
@@ -274,9 +397,13 @@
     $diffMeta.textContent = '';
     $diffViewer.innerHTML = '<div class="loading">Loading history...</div>';
 
+    // Clear active range button when selecting a specific file
+    clearActiveRangeBtn();
+
     try {
       historyEntries = await apiJson('/api/history?file=' + encodeURIComponent(path));
-      renderTimeline();
+      tlMode = 'single';
+      setTimelineSingleFile(path, historyEntries);
       // Auto-select latest entry
       if (historyEntries.length > 0) {
         selectEntry(historyEntries.length - 1);
@@ -290,7 +417,63 @@
     }
   }
 
-  // ---- Timeline ------------------------------------------------------------
+  /** Select multiple files and show them in the multi-file timeline */
+  async function selectMultipleFiles(files) {
+    if (files.length === 0) return;
+    clearActiveRangeBtn();
+    $diffTitle.textContent = files.length + ' files selected';
+    $diffMeta.textContent = '';
+
+    // Load history for all selected files
+    try {
+      const allEntries = [];
+      const results = await Promise.all(
+        files.map((f) => apiJson('/api/history?file=' + encodeURIComponent(f)))
+      );
+      for (let i = 0; i < files.length; i++) {
+        for (const entry of results[i]) {
+          allEntries.push(entry);
+        }
+      }
+      if (allEntries.length === 0) {
+        tlMode = 'multi';
+        tlLanes = [];
+        tlViewStart = Date.now() - 3600000;
+        tlViewEnd = Date.now();
+        updateTimelineLabel();
+        updateLaneLabels();
+        requestTimelineDraw();
+        return;
+      }
+
+      // Derive time range from entries
+      let minTs = Infinity;
+      let maxTs = -Infinity;
+      for (const e of allEntries) {
+        const ts = new Date(e.timestamp).getTime();
+        if (ts < minTs) minTs = ts;
+        if (ts > maxTs) maxTs = ts;
+      }
+      const span = Math.max(maxTs - minTs, MIN_VIEW_SPAN);
+      const pad = span * 0.08;
+      setTimelineMultiFile(allEntries, minTs - pad, maxTs + pad);
+
+      // Also load history for the primary (currentFile) to enable diff
+      if (currentFile) {
+        const idx = files.indexOf(currentFile);
+        if (idx >= 0) {
+          historyEntries = results[idx];
+          if (historyEntries.length > 0) {
+            selectEntryDiff(historyEntries.length - 1);
+          }
+        }
+      }
+    } catch (e) {
+      $status.textContent = 'Failed to load history: ' + e.message;
+    }
+  }
+
+  // ---- Timeline Engine (Canvas) ---------------------------------------------
   function updateRestoreButton() {
     if (!currentFile || !selectedRestoreChecksum) {
       $btnRestore.classList.remove('is-visible');
@@ -299,60 +482,614 @@
     $btnRestore.classList.add('is-visible');
   }
 
-  function renderTimeline() {
-    $timeline.innerHTML = '';
-    $timelineLabel.textContent = '';
+  /** Set timeline to show a single file's history */
+  function setTimelineSingleFile(file, entries) {
+    tlLanes = entries.length > 0 ? [{ file: file, entries: entries }] : [];
+    tlScrollY = 0;
+    tlActiveNode = null;
 
-    if (historyEntries.length === 0) {
-      $timelineLabel.textContent = 'No history';
+    if (entries.length === 0) {
+      tlViewStart = Date.now() - 3600000;
+      tlViewEnd = Date.now();
+      updateTimelineLabel();
+      updateLaneLabels();
+      requestTimelineDraw();
       return;
     }
 
-    const first = new Date(historyEntries[0].timestamp);
-    const last = new Date(historyEntries[historyEntries.length - 1].timestamp);
-    $timelineLabel.textContent = formatDate(first) + ' \u2014 ' + formatDate(last);
+    // Set view range to encompass all entries with padding
+    const first = new Date(entries[0].timestamp).getTime();
+    const last = new Date(entries[entries.length - 1].timestamp).getTime();
+    const span = Math.max(last - first, MIN_VIEW_SPAN);
+    const pad = span * 0.08;
+    tlViewStart = first - pad;
+    tlViewEnd = last + pad;
 
-    const frag = document.createDocumentFragment();
-    for (let i = 0; i < historyEntries.length; i++) {
-      const entry = historyEntries[i];
-
-      // Track segment before node (except first)
-      if (i > 0) {
-        const track = document.createElement('div');
-        track.className = 'tl-track';
-        frag.appendChild(track);
-      }
-
-      const node = document.createElement('div');
-      node.className = 'tl-node op-' + entry.op + (i === activeEntryIdx ? ' active' : '');
-      node.dataset.idx = i;
-
-      const tooltip = document.createElement('div');
-      tooltip.className = 'tl-tooltip';
-      tooltip.textContent = entry.op + ' \u2022 ' + formatDateTime(new Date(entry.timestamp));
-      if (entry.size != null) {
-        tooltip.textContent += ' \u2022 ' + formatSize(entry.size);
-      }
-      node.appendChild(tooltip);
-
-      node.addEventListener('click', () => selectEntry(i));
-      frag.appendChild(node);
-    }
-    $timeline.appendChild(frag);
+    updateTimelineLabel();
+    updateLaneLabels();
+    requestTimelineDraw();
   }
 
-  async function selectEntry(idx) {
+  /** Set timeline to show multi-file activity */
+  function setTimelineMultiFile(activityEntries, viewStart, viewEnd) {
+    // Group entries by file
+    const byFile = new Map();
+    for (const e of activityEntries) {
+      if (!byFile.has(e.file)) {
+        byFile.set(e.file, []);
+      }
+      byFile.get(e.file).push(e);
+    }
+
+    // Sort files alphabetically
+    const sortedFiles = Array.from(byFile.keys()).sort();
+    tlLanes = sortedFiles.map((f) => ({ file: f, entries: byFile.get(f) }));
+    tlScrollY = 0;
+    tlActiveNode = null;
+    tlMode = 'multi';
+    tlViewStart = viewStart;
+    tlViewEnd = viewEnd;
+
+    updateTimelineLabel();
+    updateLaneLabels();
+    requestTimelineDraw();
+  }
+
+  function updateTimelineLabel() {
+    if (tlLanes.length === 0) {
+      $timelineLabel.textContent = 'No activity';
+      return;
+    }
+    const s = new Date(tlViewStart);
+    const e = new Date(tlViewEnd);
+    $timelineLabel.textContent = formatDateTime(s) + ' \u2014 ' + formatDateTime(e);
+  }
+
+  function updateLaneLabels() {
+    $timelineLanes.innerHTML = '';
+
+    // Add a spacer matching the ruler height so labels align with canvas lanes
+    const spacer = document.createElement('div');
+    spacer.className = 'tl-lane-spacer';
+    spacer.style.height = RULER_HEIGHT + 'px';
+    spacer.style.flexShrink = '0';
+    $timelineLanes.appendChild(spacer);
+
+    for (let i = 0; i < tlLanes.length; i++) {
+      const lane = tlLanes[i];
+      const label = document.createElement('div');
+      label.className = 'tl-lane-label' + (currentFile === lane.file ? ' active' : '');
+      // Show only the filename (last segment)
+      const parts = lane.file.split('/');
+      label.textContent = parts[parts.length - 1];
+      label.title = lane.file;
+      label.style.height = LANE_HEIGHT + 'px';
+      label.style.lineHeight = LANE_HEIGHT + 'px';
+      const file = lane.file;
+      label.addEventListener('dblclick', () => {
+        if (tlMode === 'multi') {
+          selectFile(file);
+        }
+      });
+      $timelineLanes.appendChild(label);
+    }
+    // Sync scroll
+    $timelineLanes.scrollTop = tlScrollY;
+  }
+
+  // ---- Canvas drawing -------------------------------------------------------
+  function resizeCanvas() {
+    // Use the actual rendered size of the canvas element (flex:1 fills remaining space)
+    const rect = $canvas.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+    const dpr = window.devicePixelRatio || 1;
+    $canvas.width = Math.round(w * dpr);
+    $canvas.height = Math.round(h * dpr);
+    $canvas.style.width = w + 'px';
+    $canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function requestTimelineDraw() {
+    if (tlRafId) return;
+    tlRafId = requestAnimationFrame(() => {
+      tlRafId = null;
+      drawTimeline();
+    });
+  }
+
+  function drawTimeline() {
+    resizeCanvas();
+    const w = parseFloat($canvas.style.width);
+    const h = parseFloat($canvas.style.height);
+    if (w <= 0 || h <= 0) return;
+
+    ctx.clearRect(0, 0, w, h);
+
+    drawRuler(w);
+    drawLanes(w, h);
+  }
+
+  /** Time-to-pixel conversion for the canvas drawing area */
+  function timeToX(ts, canvasWidth) {
+    if (tlViewEnd <= tlViewStart) return 0;
+    return ((ts - tlViewStart) / (tlViewEnd - tlViewStart)) * canvasWidth;
+  }
+
+  function xToTime(x, canvasWidth) {
+    if (canvasWidth <= 0) return tlViewStart;
+    return tlViewStart + (x / canvasWidth) * (tlViewEnd - tlViewStart);
+  }
+
+  /** Draw the time ruler at the top */
+  function drawRuler(w) {
+    const span = tlViewEnd - tlViewStart;
+    if (span <= 0) return;
+
+    ctx.save();
+
+    // Background
+    ctx.fillStyle = COLORS.bgSurface;
+    ctx.fillRect(0, 0, w, RULER_HEIGHT);
+
+    // Bottom border
+    ctx.strokeStyle = COLORS.border;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, RULER_HEIGHT - 0.5);
+    ctx.lineTo(w, RULER_HEIGHT - 0.5);
+    ctx.stroke();
+
+    // Choose tick interval
+    const tickIntervals = [
+      { ms: 60 * 1000, label: 'min' }, // 1 min
+      { ms: 5 * 60 * 1000, label: '5min' }, // 5 min
+      { ms: 15 * 60 * 1000, label: '15min' }, // 15 min
+      { ms: 30 * 60 * 1000, label: '30min' }, // 30 min
+      { ms: 3600 * 1000, label: 'hour' }, // 1 hour
+      { ms: 3 * 3600 * 1000, label: '3h' }, // 3 hours
+      { ms: 6 * 3600 * 1000, label: '6h' }, // 6 hours
+      { ms: 12 * 3600 * 1000, label: '12h' }, // 12 hours
+      { ms: 86400 * 1000, label: 'day' }, // 1 day
+      { ms: 7 * 86400 * 1000, label: 'week' }, // 1 week
+      { ms: 30 * 86400 * 1000, label: 'month' }, // ~1 month
+    ];
+
+    // Target about 6-12 ticks across the width
+    const targetTickCount = 8;
+    const idealInterval = span / targetTickCount;
+    let tickMs = tickIntervals[tickIntervals.length - 1].ms;
+    let tickType = tickIntervals[tickIntervals.length - 1].label;
+    for (const ti of tickIntervals) {
+      if (ti.ms >= idealInterval * 0.5) {
+        tickMs = ti.ms;
+        tickType = ti.label;
+        break;
+      }
+    }
+
+    // Draw ticks
+    const firstTick = Math.ceil(tlViewStart / tickMs) * tickMs;
+    ctx.fillStyle = COLORS.fgDim;
+    ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    for (let t = firstTick; t <= tlViewEnd; t += tickMs) {
+      const x = timeToX(t, w);
+      if (x < 0 || x > w) continue;
+
+      // Tick line
+      ctx.strokeStyle = COLORS.border;
+      ctx.beginPath();
+      ctx.moveTo(Math.round(x) + 0.5, RULER_HEIGHT - 6);
+      ctx.lineTo(Math.round(x) + 0.5, RULER_HEIGHT - 1);
+      ctx.stroke();
+
+      // Label
+      const d = new Date(t);
+      let label;
+      if (tickType === 'day' || tickType === 'week' || tickType === 'month') {
+        label =
+          (d.getMonth() + 1).toString().padStart(2, '0') +
+          '/' +
+          d.getDate().toString().padStart(2, '0');
+      } else {
+        label =
+          d.getHours().toString().padStart(2, '0') +
+          ':' +
+          d.getMinutes().toString().padStart(2, '0');
+      }
+      ctx.fillText(label, x, RULER_HEIGHT / 2);
+    }
+
+    ctx.restore();
+  }
+
+  /** Draw lanes and event nodes */
+  function drawLanes(w, h) {
+    ctx.save();
+
+    const lanesAreaTop = RULER_HEIGHT;
+    const lanesAreaHeight = h - RULER_HEIGHT;
+
+    // Clip to lanes area
+    ctx.beginPath();
+    ctx.rect(0, lanesAreaTop, w, lanesAreaHeight);
+    ctx.clip();
+
+    for (let li = 0; li < tlLanes.length; li++) {
+      const lane = tlLanes[li];
+      const laneY = lanesAreaTop + li * LANE_HEIGHT - tlScrollY;
+
+      // Skip if not visible
+      if (laneY + LANE_HEIGHT < lanesAreaTop || laneY > h) continue;
+
+      // Lane background - subtle alternating
+      if (li % 2 === 1) {
+        ctx.fillStyle = 'rgba(255,255,255,0.02)';
+        ctx.fillRect(0, laneY, w, LANE_HEIGHT);
+      }
+
+      // Lane bottom border
+      ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, laneY + LANE_HEIGHT - 0.5);
+      ctx.lineTo(w, laneY + LANE_HEIGHT - 0.5);
+      ctx.stroke();
+
+      // Draw connection lines between adjacent nodes
+      const centerY = laneY + LANE_HEIGHT / 2;
+      const visibleEntries = [];
+      for (let ei = 0; ei < lane.entries.length; ei++) {
+        const entry = lane.entries[ei];
+        const ts = new Date(entry.timestamp).getTime();
+        const x = timeToX(ts, w);
+        visibleEntries.push({ x, ei, entry });
+      }
+
+      // Draw connecting line segments
+      if (visibleEntries.length > 1) {
+        ctx.strokeStyle = COLORS.border;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(visibleEntries[0].x, centerY);
+        for (let i = 1; i < visibleEntries.length; i++) {
+          ctx.lineTo(visibleEntries[i].x, centerY);
+        }
+        ctx.stroke();
+      }
+
+      // Draw nodes
+      for (const ve of visibleEntries) {
+        const { x, ei, entry } = ve;
+        // Skip nodes that are way off screen
+        if (x < -NODE_RADIUS * 2 || x > w + NODE_RADIUS * 2) continue;
+
+        const color = opColor(entry.op);
+        const isActive =
+          tlActiveNode && tlActiveNode.laneIdx === li && tlActiveNode.entryIdx === ei;
+        const isHovered =
+          tlHoveredNode && tlHoveredNode.laneIdx === li && tlHoveredNode.entryIdx === ei;
+
+        // Draw node
+        ctx.beginPath();
+        ctx.arc(x, centerY, isHovered ? NODE_RADIUS + 1.5 : NODE_RADIUS, 0, Math.PI * 2);
+
+        if (isActive) {
+          ctx.fillStyle = color;
+          ctx.fill();
+          // Active ring
+          ctx.strokeStyle = COLORS.fgBright;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          // White center highlight
+          ctx.beginPath();
+          ctx.arc(x, centerY, 2, 0, Math.PI * 2);
+          ctx.fillStyle = COLORS.fgBright;
+          ctx.fill();
+        } else {
+          ctx.fillStyle = COLORS.bg;
+          ctx.fill();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+      }
+    }
+
+    ctx.restore();
+  }
+
+  // ---- Canvas interactions --------------------------------------------------
+  function getCanvasCoords(e) {
+    const rect = $canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  function hitTestNode(mx, my) {
+    const w = parseFloat($canvas.style.width);
+    const lanesAreaTop = RULER_HEIGHT;
+    let closest = null;
+    let closestDist = NODE_HIT_RADIUS + 1;
+
+    for (let li = 0; li < tlLanes.length; li++) {
+      const lane = tlLanes[li];
+      const laneY = lanesAreaTop + li * LANE_HEIGHT - tlScrollY;
+      const centerY = laneY + LANE_HEIGHT / 2;
+
+      for (let ei = 0; ei < lane.entries.length; ei++) {
+        const entry = lane.entries[ei];
+        const ts = new Date(entry.timestamp).getTime();
+        const x = timeToX(ts, w);
+        const dx = mx - x;
+        const dy = my - centerY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist < closestDist) {
+          closestDist = dist;
+          closest = { laneIdx: li, entryIdx: ei, entry, x, y: centerY };
+        }
+      }
+    }
+
+    return closest;
+  }
+
+  function onCanvasPointerDown(e) {
+    if (e.button !== 0) return;
+
+    tlDragState = {
+      startX: e.clientX,
+      startY: e.clientY,
+      origViewStart: tlViewStart,
+      origViewEnd: tlViewEnd,
+      origScrollY: tlScrollY,
+      moved: false,
+    };
+
+    $canvas.classList.add('grabbing');
+    document.body.classList.add('tl-dragging');
+    $canvas.setPointerCapture(e.pointerId);
+  }
+
+  function onCanvasPointerMove(e) {
+    const { x, y } = getCanvasCoords(e);
+
+    if (tlDragState) {
+      const dx = e.clientX - tlDragState.startX;
+      const dy = e.clientY - tlDragState.startY;
+
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        tlDragState.moved = true;
+      }
+
+      // Pan horizontally
+      const w = parseFloat($canvas.style.width);
+      if (w > 0) {
+        const span = tlDragState.origViewEnd - tlDragState.origViewStart;
+        const timeDelta = (dx / w) * span;
+        tlViewStart = tlDragState.origViewStart - timeDelta;
+        tlViewEnd = tlDragState.origViewEnd - timeDelta;
+      }
+
+      // Pan vertically
+      const maxScrollY = Math.max(
+        0,
+        tlLanes.length * LANE_HEIGHT - (parseFloat($canvas.style.height) - RULER_HEIGHT)
+      );
+      tlScrollY = Math.max(0, Math.min(maxScrollY, tlDragState.origScrollY - dy));
+      $timelineLanes.scrollTop = tlScrollY;
+
+      updateTimelineLabel();
+      requestTimelineDraw();
+      hideTooltip();
+    } else {
+      // Hover hit test
+      const node = hitTestNode(x, y);
+      if (node) {
+        tlHoveredNode = node;
+        showTooltipAtNode(node);
+      } else {
+        if (tlHoveredNode) {
+          tlHoveredNode = null;
+          hideTooltip();
+        }
+      }
+      requestTimelineDraw();
+    }
+  }
+
+  function onCanvasPointerUp(e) {
+    if (!tlDragState) return;
+    const wasDrag = tlDragState.moved;
+    tlDragState = null;
+    $canvas.classList.remove('grabbing');
+    document.body.classList.remove('tl-dragging');
+
+    if (!wasDrag) {
+      // Click - select node
+      const { x, y } = getCanvasCoords(e);
+      const node = hitTestNode(x, y);
+      if (node) {
+        onNodeClick(node);
+      }
+    }
+  }
+
+  function onCanvasWheel(e) {
+    e.preventDefault();
+    const { x } = getCanvasCoords(e);
+    const w = parseFloat($canvas.style.width);
+    if (w <= 0) return;
+
+    // Shift+wheel or trackpad horizontal: horizontal pan
+    if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      const span = tlViewEnd - tlViewStart;
+      const delta = (e.deltaX || e.deltaY) > 0 ? 1 : -1;
+      const panAmount = span * 0.1 * delta;
+      tlViewStart += panAmount;
+      tlViewEnd += panAmount;
+    } else if (e.ctrlKey || e.metaKey) {
+      // Ctrl/Cmd + wheel: zoom around mouse position
+      const zoomDir = e.deltaY > 0 ? 1 : -1;
+      const factor = 1 + ZOOM_FACTOR * zoomDir;
+
+      const mouseTime = xToTime(x, w);
+      const leftRatio = (mouseTime - tlViewStart) / (tlViewEnd - tlViewStart);
+
+      let newSpan = (tlViewEnd - tlViewStart) * factor;
+      newSpan = Math.max(MIN_VIEW_SPAN, newSpan);
+
+      // Find max span from all entries
+      let allMin = Infinity;
+      let allMax = -Infinity;
+      for (const lane of tlLanes) {
+        for (const ent of lane.entries) {
+          const ts = new Date(ent.timestamp).getTime();
+          if (ts < allMin) allMin = ts;
+          if (ts > allMax) allMax = ts;
+        }
+      }
+      if (allMax > allMin) {
+        const maxSpan = (allMax - allMin) * 3;
+        newSpan = Math.min(newSpan, Math.max(maxSpan, MIN_VIEW_SPAN * 100));
+      }
+
+      tlViewStart = mouseTime - leftRatio * newSpan;
+      tlViewEnd = mouseTime + (1 - leftRatio) * newSpan;
+    } else {
+      // Default wheel: vertical scroll lanes
+      const maxScrollY = Math.max(
+        0,
+        tlLanes.length * LANE_HEIGHT - (parseFloat($canvas.style.height) - RULER_HEIGHT)
+      );
+      tlScrollY = Math.max(0, Math.min(maxScrollY, tlScrollY + e.deltaY));
+      $timelineLanes.scrollTop = tlScrollY;
+    }
+
+    updateTimelineLabel();
+    requestTimelineDraw();
+  }
+
+  function onNodeClick(node) {
+    tlActiveNode = node;
+    const lane = tlLanes[node.laneIdx];
+
+    if (tlMode === 'multi' && lane.file !== currentFile) {
+      // In multi-file mode, clicking a node switches to that file
+      // but don't refetch - we set up single-file from existing data
+      currentFile = lane.file;
+      rememberSelectedFile(lane.file);
+      renderFileList();
+      $diffTitle.textContent = lane.file;
+
+      // Load the full history for this file to enable diff viewing
+      apiJson('/api/history?file=' + encodeURIComponent(lane.file)).then((entries) => {
+        historyEntries = entries;
+        // Find the matching entry index
+        const clickedEntry = node.entry;
+        let matchIdx = entries.length - 1;
+        for (let i = 0; i < entries.length; i++) {
+          if (
+            entries[i].timestamp === clickedEntry.timestamp &&
+            entries[i].checksum === clickedEntry.checksum
+          ) {
+            matchIdx = i;
+            break;
+          }
+        }
+        selectEntryDiff(matchIdx);
+      });
+    } else {
+      // Single-file mode or same file - just select the entry
+      const clickedEntry = node.entry;
+      let matchIdx = -1;
+      for (let i = 0; i < historyEntries.length; i++) {
+        if (
+          historyEntries[i].timestamp === clickedEntry.timestamp &&
+          historyEntries[i].checksum === clickedEntry.checksum
+        ) {
+          matchIdx = i;
+          break;
+        }
+      }
+      if (matchIdx >= 0) {
+        selectEntryDiff(matchIdx);
+      }
+    }
+
+    requestTimelineDraw();
+  }
+
+  function showTooltipAtNode(node) {
+    const entry = node.entry;
+    let text = entry.op + ' \u2022 ' + formatDateTime(new Date(entry.timestamp));
+    if (entry.size != null) {
+      text += ' \u2022 ' + formatSize(entry.size);
+    }
+    if (tlMode === 'multi') {
+      text = tlLanes[node.laneIdx].file + '\n' + text;
+    }
+    $tlTooltip.textContent = text;
+    $tlTooltip.style.whiteSpace = tlMode === 'multi' ? 'pre' : 'nowrap';
+    $tlTooltip.classList.add('visible');
+
+    // Compute the node's screen position in viewport coordinates (for fixed positioning)
+    const canvasRect = $canvas.getBoundingClientRect();
+    const w = parseFloat($canvas.style.width);
+    const ts = new Date(entry.timestamp).getTime();
+    const nodeX = timeToX(ts, w);
+    const laneY = RULER_HEIGHT + node.laneIdx * LANE_HEIGHT - tlScrollY;
+    const nodeCenterY = laneY + LANE_HEIGHT / 2;
+
+    // Viewport coords of the node center
+    const vpX = canvasRect.left + nodeX;
+    const vpY = canvasRect.top + nodeCenterY;
+
+    // Measure tooltip after making visible
+    const tooltipRect = $tlTooltip.getBoundingClientRect();
+    let left = vpX - tooltipRect.width / 2;
+    let top = vpY - NODE_RADIUS - tooltipRect.height - 6;
+
+    // Clamp within viewport
+    left = Math.max(4, Math.min(window.innerWidth - tooltipRect.width - 4, left));
+    if (top < 0) top = vpY + NODE_RADIUS + 6;
+
+    $tlTooltip.style.left = left + 'px';
+    $tlTooltip.style.top = top + 'px';
+  }
+
+  /** Show tooltip briefly (for keyboard navigation) */
+  function flashTooltipAtActiveNode() {
+    if (!tlActiveNode || tlLanes.length === 0) return;
+    showTooltipAtNode(tlActiveNode);
+    clearTimeout(tlTooltipTimeoutId);
+    tlTooltipTimeoutId = setTimeout(hideTooltip, 1200);
+  }
+
+  function hideTooltip() {
+    $tlTooltip.classList.remove('visible');
+    clearTimeout(tlTooltipTimeoutId);
+  }
+
+  /** Select an entry for diff viewing (updates diff panel without touching timeline) */
+  async function selectEntryDiff(idx) {
     activeEntryIdx = idx;
     const entry = historyEntries[idx];
     selectedRestoreChecksum = entry && entry.checksum ? entry.checksum : null;
     updateRestoreButton();
 
-    // Update timeline active state
-    const nodes = $timeline.querySelectorAll('.tl-node');
-    nodes.forEach((n, i) => {
-      n.classList.toggle('active', i === idx);
-    });
-    scrollTimelineToActive();
+    // Update timeline active node to match
+    if (tlLanes.length > 0) {
+      const matched = matchActiveNodeForEntry(entry);
+      if (matched) {
+        tlActiveNode = matched;
+      }
+      requestTimelineDraw();
+    }
 
     // Build diff query
     const toChecksum = entry.checksum;
@@ -396,6 +1133,262 @@
     } catch (e) {
       $diffViewer.innerHTML = '<div class="empty-state">' + escapeHtml(e.message) + '</div>';
     }
+  }
+
+  /** Find the lane index and lane-local entry index for the current file's history entry */
+  function matchActiveNodeForEntry(entry) {
+    if (!entry || tlLanes.length === 0) return null;
+    if (tlMode === 'single') {
+      // In single mode, lane 0 maps directly to historyEntries index
+      for (let ei = 0; ei < tlLanes[0].entries.length; ei++) {
+        const le = tlLanes[0].entries[ei];
+        if (le.timestamp === entry.timestamp && le.checksum === entry.checksum) {
+          return { laneIdx: 0, entryIdx: ei, entry: le };
+        }
+      }
+      return null;
+    }
+    // Multi-file mode: find the lane for currentFile
+    for (let li = 0; li < tlLanes.length; li++) {
+      if (tlLanes[li].file !== currentFile) continue;
+      const lane = tlLanes[li];
+      for (let ei = 0; ei < lane.entries.length; ei++) {
+        const le = lane.entries[ei];
+        if (le.timestamp === entry.timestamp && le.checksum === entry.checksum) {
+          return { laneIdx: li, entryIdx: ei, entry: le };
+        }
+      }
+      break;
+    }
+    return null;
+  }
+
+  /** Legacy selectEntry that also works with the new timeline */
+  async function selectEntry(idx, showFlash) {
+    if (tlLanes.length > 0 && idx >= 0 && idx < historyEntries.length) {
+      const matched = matchActiveNodeForEntry(historyEntries[idx]);
+      if (matched) {
+        tlActiveNode = matched;
+      }
+      requestTimelineDraw();
+      if (showFlash) {
+        // Wait for draw rAF to finish, then flash tooltip on the next frame
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => flashTooltipAtActiveNode());
+        });
+      }
+    }
+    await selectEntryDiff(idx);
+  }
+
+  // ---- Range buttons --------------------------------------------------------
+  function clearActiveRangeBtn() {
+    if (tlActiveRangeBtn) {
+      tlActiveRangeBtn.classList.remove('active');
+      tlActiveRangeBtn = null;
+    }
+  }
+
+  function initRangeButtons() {
+    const buttons = document.querySelectorAll('.tl-range-btn');
+    buttons.forEach((btn) => {
+      btn.addEventListener('click', () => onRangeButtonClick(btn));
+    });
+  }
+
+  async function onRangeButtonClick(btn) {
+    const range = btn.dataset.range;
+
+    // Toggle off if same button clicked
+    if (tlActiveRangeBtn === btn) {
+      clearActiveRangeBtn();
+      if (currentFile && historyEntries.length > 0) {
+        tlMode = 'single';
+        setTimelineSingleFile(currentFile, historyEntries);
+      }
+      return;
+    }
+
+    clearActiveRangeBtn();
+    btn.classList.add('active');
+    tlActiveRangeBtn = btn;
+
+    const now = Date.now();
+    let since;
+    let until = now;
+
+    if (range === 'all') {
+      // Load all activity - use a very old date
+      since = 0;
+    } else {
+      const ms = parseInt(range, 10);
+      since = now - ms;
+    }
+
+    try {
+      const sinceISO = new Date(since).toISOString();
+      const untilISO = new Date(until).toISOString();
+      const entries = await apiJson(
+        '/api/activity?since=' +
+          encodeURIComponent(sinceISO) +
+          '&until=' +
+          encodeURIComponent(untilISO)
+      );
+
+      if (entries.length === 0) {
+        tlMode = 'multi';
+        tlLanes = [];
+        tlViewStart = since || now - 3600000;
+        tlViewEnd = until;
+        updateTimelineLabel();
+        updateLaneLabels();
+        requestTimelineDraw();
+        return;
+      }
+
+      // For "all" range, derive actual time range from entries
+      if (range === 'all') {
+        const first = new Date(entries[0].timestamp).getTime();
+        const last = new Date(entries[entries.length - 1].timestamp).getTime();
+        const span = Math.max(last - first, MIN_VIEW_SPAN);
+        const pad = span * 0.08;
+        since = first - pad;
+        until = last + pad;
+      }
+
+      setTimelineMultiFile(entries, since, until);
+    } catch (e) {
+      $status.textContent = 'Activity load failed: ' + e.message;
+    }
+  }
+
+  // ---- Timeline vertical resize ---------------------------------------------
+  function initTimelineResize() {
+    const MIN_HEIGHT = 60;
+    const MAX_HEIGHT_RATIO = 0.5;
+
+    // Restore saved height
+    const saved = localStorage.getItem(TL_HEIGHT_STORAGE_KEY);
+    if (saved) {
+      const h = parseInt(saved, 10);
+      if (h >= MIN_HEIGHT) {
+        $timelineBar.style.height = h + 'px';
+      }
+    }
+
+    let startY = 0;
+    let startHeight = 0;
+
+    function onMouseDown(e) {
+      e.preventDefault();
+      startY = e.clientY;
+      startHeight = $timelineBar.getBoundingClientRect().height;
+      $tlResizeHandle.classList.add('dragging');
+      document.body.classList.add('tl-resizing');
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    }
+
+    function onMouseMove(e) {
+      const maxH = window.innerHeight * MAX_HEIGHT_RATIO;
+      // Dragging up increases height (resize handle is above timeline)
+      let newHeight = startHeight - (e.clientY - startY);
+      newHeight = Math.max(MIN_HEIGHT, Math.min(maxH, newHeight));
+      $timelineBar.style.height = newHeight + 'px';
+      requestTimelineDraw();
+    }
+
+    function onMouseUp() {
+      $tlResizeHandle.classList.remove('dragging');
+      document.body.classList.remove('tl-resizing');
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      // Persist
+      const h = Math.round($timelineBar.getBoundingClientRect().height);
+      localStorage.setItem(TL_HEIGHT_STORAGE_KEY, String(h));
+      requestTimelineDraw();
+    }
+
+    $tlResizeHandle.addEventListener('mousedown', onMouseDown);
+  }
+
+  // ---- Timeline lanes resize -------------------------------------------------
+  function initTimelineLanesResize() {
+    const MIN_WIDTH = 60;
+    const MAX_WIDTH_RATIO = 0.4;
+
+    // Restore saved width
+    const saved = localStorage.getItem(TL_LANES_WIDTH_STORAGE_KEY);
+    if (saved) {
+      const w = parseInt(saved, 10);
+      if (w >= MIN_WIDTH) {
+        $timelineLanes.style.width = w + 'px';
+      }
+    }
+
+    let startX = 0;
+    let startWidth = 0;
+
+    function onMouseDown(e) {
+      e.preventDefault();
+      startX = e.clientX;
+      startWidth = $timelineLanes.getBoundingClientRect().width;
+      $tlLanesResize.classList.add('dragging');
+      document.body.classList.add('tl-lanes-resizing');
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    }
+
+    function onMouseMove(e) {
+      const maxW = $timelineBody.getBoundingClientRect().width * MAX_WIDTH_RATIO;
+      let newWidth = startWidth + (e.clientX - startX);
+      newWidth = Math.max(MIN_WIDTH, Math.min(maxW, newWidth));
+      $timelineLanes.style.width = newWidth + 'px';
+      requestTimelineDraw();
+    }
+
+    function onMouseUp() {
+      $tlLanesResize.classList.remove('dragging');
+      document.body.classList.remove('tl-lanes-resizing');
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      const w = Math.round($timelineLanes.getBoundingClientRect().width);
+      localStorage.setItem(TL_LANES_WIDTH_STORAGE_KEY, String(w));
+      requestTimelineDraw();
+    }
+
+    $tlLanesResize.addEventListener('mousedown', onMouseDown);
+  }
+
+  // ---- Initialize timeline event listeners ----------------------------------
+  function initTimeline() {
+    $canvas.addEventListener('pointerdown', onCanvasPointerDown);
+    $canvas.addEventListener('pointermove', onCanvasPointerMove);
+    $canvas.addEventListener('pointerup', onCanvasPointerUp);
+    $canvas.addEventListener('pointerleave', () => {
+      if (tlHoveredNode) {
+        tlHoveredNode = null;
+        hideTooltip();
+        requestTimelineDraw();
+      }
+    });
+    $canvas.addEventListener('wheel', onCanvasWheel, { passive: false });
+
+    // Sync vertical scroll between lanes and canvas
+    $timelineLanes.addEventListener('scroll', () => {
+      tlScrollY = $timelineLanes.scrollTop;
+      requestTimelineDraw();
+    });
+
+    // Redraw on resize
+    const resizeObserver = new ResizeObserver(() => {
+      requestTimelineDraw();
+    });
+    resizeObserver.observe($timelineBody);
+
+    initRangeButtons();
+    initTimelineResize();
+    initTimelineLanesResize();
   }
 
   // ---- Diff renderer -------------------------------------------------------
@@ -761,14 +1754,6 @@
     return div.innerHTML;
   }
 
-  function formatDate(d) {
-    return d.toLocaleDateString(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
-  }
-
   function formatDateTime(d) {
     return d.toLocaleString(undefined, {
       year: 'numeric',
@@ -798,14 +1783,6 @@
       lines.pop();
     }
     return lines;
-  }
-
-  function scrollTimelineToActive() {
-    if (activeEntryIdx < 0) return;
-    const node = $timeline.querySelector('.tl-node.active');
-    if (node) {
-      node.scrollIntoView({ block: 'nearest', inline: 'center' });
-    }
   }
 
   function scrollFileToActive() {
@@ -867,13 +1844,13 @@
       e.preventDefault();
       const next = Math.max(0, activeEntryIdx - 1);
       if (next !== activeEntryIdx) {
-        selectEntry(next);
+        selectEntry(next, true);
       }
     } else if (e.key === 'ArrowRight') {
       e.preventDefault();
       const next = Math.min(historyEntries.length - 1, activeEntryIdx + 1);
       if (next !== activeEntryIdx) {
-        selectEntry(next);
+        selectEntry(next, true);
       }
     }
   }
@@ -899,6 +1876,7 @@
   async function init() {
     hideDeletedFiles = $hideDeleted.checked;
     initSidebarResize();
+    initTimeline();
 
     try {
       const health = await apiJson('/api/health');
@@ -909,15 +1887,20 @@
         if (storedFile && treeHasFile(fileTree, storedFile, '')) {
           expandDirsForPath(storedFile);
           await selectFile(storedFile);
+        } else {
+          // No stored file - show empty timeline
+          requestTimelineDraw();
         }
       } else {
         $status.textContent = 'No directory checked out';
         $diffViewer.innerHTML =
           '<div class="empty-state">Run <code>ftm checkout &lt;dir&gt;</code> first</div>';
+        requestTimelineDraw();
       }
     } catch {
       $status.textContent = 'Server unreachable';
       $diffViewer.innerHTML = '<div class="empty-state">Cannot connect to FTM server</div>';
+      requestTimelineDraw();
     }
 
     document.addEventListener('keydown', onTimelineKeydown);
