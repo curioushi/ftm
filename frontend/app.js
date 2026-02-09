@@ -656,6 +656,7 @@
     ctx.clearRect(0, 0, w, h);
 
     drawRuler(w);
+    drawDateSeparators(w, h);
     drawLanes(w, h);
   }
 
@@ -668,6 +669,34 @@
   function xToTime(x, canvasWidth) {
     if (canvasWidth <= 0) return tlViewStart;
     return tlViewStart + (x / canvasWidth) * (tlViewEnd - tlViewStart);
+  }
+
+  /** Midnight (00:00) in local time for given timestamp */
+  function getMidnightLocal(ts) {
+    const d = new Date(ts);
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  }
+
+  /** Draw vertical lines at 00:00 for each day in the visible range */
+  function drawDateSeparators(w, h) {
+    if (tlViewEnd <= tlViewStart) return;
+    const MS_PER_DAY = 86400 * 1000;
+    const startDay = new Date(tlViewStart);
+    let midnight = getMidnightLocal(tlViewStart);
+    if (midnight <= tlViewStart) midnight += MS_PER_DAY;
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 1;
+    for (let t = midnight; t < tlViewEnd; t += MS_PER_DAY) {
+      const x = timeToX(t, w);
+      if (x < 0 || x > w) continue;
+      ctx.beginPath();
+      ctx.moveTo(Math.round(x) + 0.5, 0);
+      ctx.lineTo(Math.round(x) + 0.5, h);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   /** Draw the time ruler at the top */
