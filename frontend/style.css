@@ -272,9 +272,11 @@ body.resizing * {
   table-layout: fixed;
 }
 .diff-gutter {
-  width: 50px;
+  width: 36px;
+  min-width: 36px;
+  max-width: 36px;
   text-align: right;
-  padding: 0 6px;
+  padding: 0 4px;
   color: var(--fg-dim);
   user-select: none;
   font-size: 11px;
@@ -282,19 +284,33 @@ body.resizing * {
   white-space: nowrap;
 }
 .diff-gutter-old { border-right: 1px solid #1a1a1a; }
-.diff-gutter-new { border-right: 1px solid var(--border); }
+.diff-gutter-new { border-right: 1px solid #1a1a1a; }
 .diff-code {
   padding: 0 12px;
   white-space: pre;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.diff-code-old {
+  border-right: 1px solid var(--border);
+}
+.diff-code-new {}
 
-.diff-line-insert { background: var(--diff-insert-bg); }
-.diff-line-insert .diff-code { color: var(--diff-insert-fg); }
-.diff-line-delete { background: var(--diff-delete-bg); }
-.diff-line-delete .diff-code { color: var(--diff-delete-fg); }
-.diff-line-equal .diff-code { color: var(--fg); }
+.diff-col-gutter { width: 36px; }
+.diff-col-code { width: calc((100% - 72px) / 2); }
+
+.diff-line-insert .diff-code-new {
+  background: var(--diff-insert-bg);
+  color: var(--diff-insert-fg);
+}
+.diff-line-delete .diff-code-old {
+  background: var(--diff-delete-bg);
+  color: var(--diff-delete-fg);
+}
+.diff-line-equal .diff-code-old,
+.diff-line-equal .diff-code-new {
+  color: var(--fg);
+}
 
 .diff-separator {
   background: var(--bg-surface);

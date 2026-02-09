@@ -12,6 +12,9 @@
   let diffRows = [];           // flat array of rendered diff row data
   let collapsedDirs = new Set(); // collapsed directory paths
   let hideDeletedFiles = true;  // when true, API returns only files not deleted
+  let lastDiffFromChecksum = null;
+  let lastDiffToChecksum = null;
+  let visibleFilePaths = [];
 
   // ---- DOM refs ------------------------------------------------------------
   const $filter = document.getElementById("filter");
@@ -94,6 +97,7 @@
     const tree = query ? filterTree(fileTree, query, "") : fileTree;
 
     $fileList.innerHTML = "";
+    visibleFilePaths = [];
 
     if (tree.length === 0) {
       $fileList.innerHTML = '<div class="empty-state">No files</div>';
@@ -103,6 +107,7 @@
     const frag = document.createDocumentFragment();
     renderTreeNodes(frag, tree, "", 0, !!query);
     $fileList.appendChild(frag);
+    scrollFileToActive();
   }
 
   // Recursively render tree nodes into a parent element
@@ -148,6 +153,7 @@
         const fileRow = document.createElement("div");
         fileRow.className = "tree-file" + (fullPath === currentFile ? " active" : "");
         fileRow.style.paddingLeft = (8 + depth * 16 + 18) + "px";
+        visibleFilePaths.push(fullPath);
 
         const nameSpan = document.createElement("span");
         nameSpan.className = "file-name";
@@ -292,6 +298,7 @@
     nodes.forEach((n, i) => {
       n.classList.toggle("active", i === idx);
     });
+    scrollTimelineToActive();
 
     // Build diff query
     const toChecksum = entry.checksum;
@@ -307,10 +314,12 @@
     // Find previous checksum
     let fromChecksum = null;
     for (let i = idx - 1; i >= 0; i--) {
-      if (historyEntries[i].checksum) {
-        fromChecksum = historyEntries[i].checksum;
+      const prev = historyEntries[i];
+      if (!prev.checksum) {
         break;
       }
+      fromChecksum = prev.checksum;
+      break;
     }
 
     $diffMeta.textContent = entry.op + " \u2022 " + formatDateTime(new Date(entry.timestamp));
@@ -330,7 +339,7 @@
         url += "&from=" + encodeURIComponent(fromChecksum);
       }
       const diff = await apiJson(url);
-      renderDiff(diff);
+      renderDiff(diff, fromChecksum, toChecksum);
     } catch (e) {
       $diffViewer.innerHTML =
         '<div class="empty-state">' + escapeHtml(e.message) + "</div>";
@@ -344,8 +353,10 @@
   const ROW_HEIGHT = 20; // must match CSS line-height
   const OVERSCAN = 20;   // extra rows above/below viewport
 
-  function renderDiff(diff) {
+  function renderDiff(diff, fromChecksum, toChecksum) {
     diffRows = [];
+    lastDiffFromChecksum = fromChecksum || "";
+    lastDiffToChecksum = toChecksum || "";
 
     if (diff.hunks.length === 0) {
       $diffViewer.innerHTML = '<div class="empty-state">No changes</div>';
@@ -360,6 +371,10 @@
       if (hi > 0 || hunk.old_start > 1 || hunk.new_start > 1) {
         let skippedOld = 0;
         let skippedNew = 0;
+        let oldFrom = 1;
+        let oldTo = hunk.old_start - 1;
+        let newFrom = 1;
+        let newTo = hunk.new_start - 1;
         if (hi === 0) {
           skippedOld = hunk.old_start - 1;
           skippedNew = hunk.new_start - 1;
@@ -369,16 +384,20 @@
           const prevEndNew = prevHunkEndNew(prev);
           skippedOld = hunk.old_start - prevEndOld;
           skippedNew = hunk.new_start - prevEndNew;
+          oldFrom = prevEndOld;
+          oldTo = hunk.old_start - 1;
+          newFrom = prevEndNew;
+          newTo = hunk.new_start - 1;
         }
         const skipped = Math.max(skippedOld, skippedNew);
         if (skipped > 0) {
           diffRows.push({
             type: "separator",
             text: "\u00B7\u00B7\u00B7 " + skipped + " unchanged lines \u00B7\u00B7\u00B7",
-            oldStart: hunk.old_start,
-            newStart: hunk.new_start,
-            fromChecksum: null,
-            toChecksum: null,
+            oldFrom,
+            oldTo,
+            newFrom,
+            newTo,
           });
         }
       }
@@ -418,6 +437,10 @@
         diffRows.push({
           type: "separator",
           text: "\u00B7\u00B7\u00B7 " + remaining + " unchanged lines \u00B7\u00B7\u00B7",
+          oldFrom: lastEndOld,
+          oldTo: diff.old_total,
+          newFrom: lastEndNew,
+          newTo: diff.new_total,
         });
       }
     }
@@ -444,7 +467,8 @@
   // ---- Virtual scroll ------------------------------------------------------
   let vsContainer = null; // the scrollable wrapper
   let vsSpacer = null;    // tall empty div for scroll height
-  let vsContent = null;   // positioned div holding visible rows
+  let vsContent = null;   // positioned table holding visible rows
+  let vsBody = null;      // tbody for diff rows
   let vsRafId = null;
 
   function initVirtualScroll() {
@@ -461,6 +485,24 @@
     vsContent.style.left = "0";
     vsContent.style.right = "0";
     vsContent.style.willChange = "transform";
+
+    const colgroup = document.createElement("colgroup");
+    const colGutterOld = document.createElement("col");
+    colGutterOld.className = "diff-col-gutter";
+    const colCodeOld = document.createElement("col");
+    colCodeOld.className = "diff-col-code";
+    const colGutterNew = document.createElement("col");
+    colGutterNew.className = "diff-col-gutter";
+    const colCodeNew = document.createElement("col");
+    colCodeNew.className = "diff-col-code";
+    colgroup.appendChild(colGutterOld);
+    colgroup.appendChild(colCodeOld);
+    colgroup.appendChild(colGutterNew);
+    colgroup.appendChild(colCodeNew);
+    vsContent.appendChild(colgroup);
+
+    vsBody = document.createElement("tbody");
+    vsContent.appendChild(vsBody);
 
     vsSpacer.appendChild(vsContent);
     vsContainer.appendChild(vsSpacer);
@@ -500,7 +542,7 @@
       if (row.type === "separator") {
         tr.className = "diff-separator";
         const td = document.createElement("td");
-        td.colSpan = 3;
+        td.colSpan = 4;
         td.textContent = row.text;
         td.addEventListener("click", () => expandSeparator(i));
         tr.appendChild(td);
@@ -511,33 +553,88 @@
         gutterOld.className = "diff-gutter diff-gutter-old";
         gutterOld.textContent = row.oldNum != null ? row.oldNum : "";
 
+        const codeOld = document.createElement("td");
+        codeOld.className = "diff-code diff-code-old";
+
         const gutterNew = document.createElement("td");
         gutterNew.className = "diff-gutter diff-gutter-new";
         gutterNew.textContent = row.newNum != null ? row.newNum : "";
 
-        const code = document.createElement("td");
-        code.className = "diff-code";
-        code.textContent = row.content;
+        const codeNew = document.createElement("td");
+        codeNew.className = "diff-code diff-code-new";
+
+        if (row.type === "equal") {
+          codeOld.textContent = row.content;
+          codeNew.textContent = row.content;
+        } else if (row.type === "delete") {
+          codeOld.textContent = row.content;
+          codeNew.textContent = "";
+        } else if (row.type === "insert") {
+          codeOld.textContent = "";
+          codeNew.textContent = row.content;
+        }
 
         tr.appendChild(gutterOld);
+        tr.appendChild(codeOld);
         tr.appendChild(gutterNew);
-        tr.appendChild(code);
+        tr.appendChild(codeNew);
       }
 
       frag.appendChild(tr);
     }
 
-    vsContent.innerHTML = "";
-    vsContent.appendChild(frag);
+    vsBody.innerHTML = "";
+    vsBody.appendChild(frag);
   }
 
   async function expandSeparator(rowIdx) {
-    // For now, separators are informational only.
-    // A full implementation would fetch the unchanged lines from the snapshot
-    // and splice them in. This is a placeholder.
     const row = diffRows[rowIdx];
-    if (row && row.type === "separator") {
-      row.text = "(expanded - full content can be fetched via snapshot API)";
+    if (!row || row.type !== "separator") return;
+    if (!lastDiffToChecksum) return;
+
+    const oldFrom = row.oldFrom || 0;
+    const oldTo = row.oldTo || 0;
+    const newFrom = row.newFrom || 0;
+    const newTo = row.newTo || 0;
+
+    if (oldTo < oldFrom && newTo < newFrom) return;
+
+    try {
+      const [oldText, newText] = await Promise.all([
+        lastDiffFromChecksum
+          ? apiText("/api/snapshot?checksum=" + encodeURIComponent(lastDiffFromChecksum))
+          : Promise.resolve(""),
+        apiText("/api/snapshot?checksum=" + encodeURIComponent(lastDiffToChecksum)),
+      ]);
+
+      const oldLines = normalizeLines(oldText);
+      const newLines = normalizeLines(newText);
+
+      const oldSlice = oldTo >= oldFrom ? oldLines.slice(oldFrom - 1, oldTo) : [];
+      const newSlice = newTo >= newFrom ? newLines.slice(newFrom - 1, newTo) : [];
+      const count = Math.max(oldSlice.length, newSlice.length);
+
+      const expanded = [];
+      let oldLineNum = oldFrom;
+      let newLineNum = newFrom;
+      for (let i = 0; i < count; i++) {
+        const oldContent = oldSlice[i] ?? "";
+        const newContent = newSlice[i] ?? "";
+        expanded.push({
+          type: "equal",
+          content: oldContent || newContent,
+          oldNum: oldSlice[i] != null ? oldLineNum++ : null,
+          newNum: newSlice[i] != null ? newLineNum++ : null,
+        });
+      }
+
+      diffRows.splice(rowIdx, 1, ...expanded);
+      if (vsSpacer) {
+        vsSpacer.style.height = diffRows.length * ROW_HEIGHT + "px";
+      }
+      renderVisibleRows();
+    } catch (e) {
+      row.text = "(failed to load snapshot)";
       renderVisibleRows();
     }
   }
@@ -613,6 +710,80 @@
     return (bytes / (1024 * 1024)).toFixed(1) + " MB";
   }
 
+  async function apiText(path) {
+    const res = await api(path);
+    return res.text();
+  }
+
+  function normalizeLines(text) {
+    if (!text) return [];
+    const lines = text.split("\n");
+    if (lines.length > 0 && lines[lines.length - 1] === "") {
+      lines.pop();
+    }
+    return lines;
+  }
+
+  function scrollTimelineToActive() {
+    if (activeEntryIdx < 0) return;
+    const node = $timeline.querySelector(".tl-node.active");
+    if (node) {
+      node.scrollIntoView({ block: "nearest", inline: "center" });
+    }
+  }
+
+  function scrollFileToActive() {
+    const node = $fileList.querySelector(".tree-file.active");
+    if (node) {
+      node.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }
+
+  function shouldIgnoreKeyboard(e) {
+    const target = e.target;
+    if (!target) return false;
+    const tag = target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") return true;
+    return target.isContentEditable === true;
+  }
+
+  function onTimelineKeydown(e) {
+    if (shouldIgnoreKeyboard(e)) return;
+    if (historyEntries.length === 0) return;
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      const next = Math.max(0, activeEntryIdx - 1);
+      if (next !== activeEntryIdx) {
+        selectEntry(next);
+      }
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      const next = Math.min(historyEntries.length - 1, activeEntryIdx + 1);
+      if (next !== activeEntryIdx) {
+        selectEntry(next);
+      }
+    }
+  }
+
+  function onFileListKeydown(e) {
+    if (shouldIgnoreKeyboard(e)) return;
+    if (visibleFilePaths.length === 0) return;
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+
+    e.preventDefault();
+    let idx = visibleFilePaths.indexOf(currentFile);
+    if (idx === -1) {
+      idx = e.key === "ArrowDown" ? -1 : visibleFilePaths.length;
+    }
+    const next =
+      e.key === "ArrowDown"
+        ? Math.min(visibleFilePaths.length - 1, idx + 1)
+        : Math.max(0, idx - 1);
+    if (visibleFilePaths[next]) {
+      selectFile(visibleFilePaths[next]);
+    }
+  }
+
   // ---- Init ----------------------------------------------------------------
   async function init() {
     hideDeletedFiles = $hideDeleted.checked;
@@ -633,6 +804,9 @@
       $diffViewer.innerHTML =
         '<div class="empty-state">Cannot connect to FTM server</div>';
     }
+
+    document.addEventListener("keydown", onTimelineKeydown);
+    document.addEventListener("keydown", onFileListKeydown);
   }
 
   init();
