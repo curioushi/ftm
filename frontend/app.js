@@ -66,6 +66,11 @@
     return COLORS.fgDim;
   }
 
+  function opLabel(op) {
+    if (!op) return '';
+    return op.charAt(0).toUpperCase() + op.slice(1).toLowerCase();
+  }
+
   // ---- DOM refs ------------------------------------------------------------
   const $filter = document.getElementById('filter');
   const $showDeleted = document.getElementById('show-deleted');
@@ -1192,7 +1197,7 @@
 
   function showTooltipAtNode(node) {
     const entry = node.entry;
-    let text = entry.op + ' \u2022 ' + formatDateTime(new Date(entry.timestamp));
+    let text = opLabel(entry.op) + ' \u2022 ' + formatDateTime(new Date(entry.timestamp));
     if (entry.size != null) {
       text += ' \u2022 ' + formatSize(entry.size);
     }
@@ -1263,7 +1268,7 @@
     if (!toChecksum) {
       // Delete event - show message
       $diffViewer.innerHTML = '<div class="empty-state">File was deleted in this version</div>';
-      $diffMeta.textContent = entry.op + ' \u2022 ' + formatDateTime(new Date(entry.timestamp));
+      $diffMeta.textContent = opLabel(entry.op) + ' \u2022 ' + formatDateTime(new Date(entry.timestamp));
       return;
     }
 
@@ -1278,7 +1283,7 @@
       break;
     }
 
-    $diffMeta.textContent = entry.op + ' \u2022 ' + formatDateTime(new Date(entry.timestamp));
+    $diffMeta.textContent = opLabel(entry.op) + ' \u2022 ' + formatDateTime(new Date(entry.timestamp));
     if (entry.size != null) {
       $diffMeta.textContent += ' \u2022 ' + formatSize(entry.size);
     }
@@ -1989,14 +1994,13 @@
   }
 
   function formatDateTime(d) {
-    return d.toLocaleString(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const h = String(d.getHours()).padStart(2, '0');
+    const min = String(d.getMinutes()).padStart(2, '0');
+    const s = String(d.getSeconds()).padStart(2, '0');
+    return y + '/' + m + '/' + day + ' ' + h + ':' + min + ':' + s;
   }
 
   function formatSize(bytes) {

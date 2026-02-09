@@ -33,7 +33,7 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--sans);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.5;
   overflow: hidden;
 }
@@ -129,7 +129,7 @@ input[type='text']:focus {
 }
 
 #status {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-dim);
 }
 
@@ -415,7 +415,7 @@ body.resizing * {
 }
 
 #diff-meta {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-dim);
 }
 
@@ -664,7 +664,7 @@ body.tl-resizing * {
   height: 24px;
   line-height: 24px;
   padding: 0 8px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-dim);
   white-space: nowrap;
   overflow: hidden;
