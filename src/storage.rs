@@ -39,7 +39,7 @@ impl IndexView {
         self.last_by_file.insert(file, index);
     }
 
-    fn rebuild(&mut self, index: &Index) {
+    pub(crate) fn rebuild(&mut self, index: &Index) {
         self.last_by_file.clear();
         for (i, entry) in index.history.iter().enumerate() {
             self.last_by_file.insert(entry.file.clone(), i);
@@ -213,9 +213,6 @@ impl Storage {
 
         index.history.push(entry.clone());
         view.update_last_for_file(entry.file.clone(), index.history.len() - 1);
-        if self.trim_history(index) {
-            view.rebuild(index);
-        }
         Ok(Some(entry))
     }
 
@@ -326,7 +323,7 @@ impl Storage {
         Ok(count)
     }
 
-    fn trim_history(&self, index: &mut Index) -> bool {
+    pub(crate) fn trim_history(&self, index: &mut Index) -> bool {
         // Single O(n) pass: count per-file entries from newest to oldest,
         // marking old entries for removal via a keep-bitmap.
         let mut file_counts: HashMap<&str, usize> = HashMap::new();
