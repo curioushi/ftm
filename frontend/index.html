@@ -1,46 +1,54 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FTM - File Time Machine</title>
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
-  <div id="app">
-    <header id="toolbar">
-      <div class="toolbar-left">
-        <span class="logo">FTM</span>
-        <input id="filter" type="text" placeholder="Filter files..." autocomplete="off" spellcheck="false">
-        <label class="toolbar-checkbox"><input type="checkbox" id="hide-deleted" checked> Hide deleted files</label>
-      </div>
-      <div class="toolbar-right">
-        <button id="btn-scan" title="Scan for changes">Scan</button>
-        <span id="status"></span>
-      </div>
-    </header>
-
-    <div id="main">
-      <aside id="sidebar">
-        <div id="sidebar-header">Files</div>
-        <div id="file-list"></div>
-      </aside>
-      <div id="resize-handle"></div>
-      <div id="content">
-        <div id="diff-header">
-          <span id="diff-title">Select a file to view history</span>
-          <span id="diff-meta"></span>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FTM - File Time Machine</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="toolbar">
+        <div class="toolbar-left">
+          <span class="logo">FTM</span>
+          <input
+            id="filter"
+            type="text"
+            placeholder="Filter files..."
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <label class="toolbar-checkbox"
+            ><input type="checkbox" id="hide-deleted" checked /> Hide deleted files</label
+          >
         </div>
-        <div id="diff-viewer"></div>
+        <div class="toolbar-right">
+          <button id="btn-scan" title="Scan for changes">Scan</button>
+          <span id="status"></span>
+        </div>
+      </header>
+
+      <div id="main">
+        <aside id="sidebar">
+          <div id="sidebar-header">Files</div>
+          <div id="file-list"></div>
+        </aside>
+        <div id="resize-handle"></div>
+        <div id="content">
+          <div id="diff-header">
+            <span id="diff-title">Select a file to view history</span>
+            <span id="diff-meta"></span>
+          </div>
+          <div id="diff-viewer"></div>
+        </div>
       </div>
+
+      <footer id="timeline-bar">
+        <div id="timeline-label"></div>
+        <div id="timeline"></div>
+      </footer>
     </div>
 
-    <footer id="timeline-bar">
-      <div id="timeline-label"></div>
-      <div id="timeline"></div>
-    </footer>
-  </div>
-
-  <script src="app.js"></script>
-</body>
+    <script src="app.js"></script>
+  </body>
 </html>
