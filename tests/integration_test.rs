@@ -1029,6 +1029,138 @@ mod rename_tests {
 
         stop_server(&mut server);
     }
+
+    /// Rename a folder within the watched directory. Old path files should get delete
+    /// entries; new path files should get create entries.
+    #[test]
+    fn test_rename_folder_within_watched_dir() {
+        let dir = setup_test_dir();
+        let (mut server, _port) = start_server_and_checkout(dir.path());
+
+        let old_dir = dir.path().join("old_name");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::write(old_dir.join("a.txt"), "content a").unwrap();
+        std::fs::write(old_dir.join("b.rs"), "content b").unwrap();
+
+        assert!(
+            wait_for_index(dir.path(), "old_name/a.txt", 1, 3000),
+            "old_name/a.txt should be recorded"
+        );
+        assert!(
+            wait_for_index(dir.path(), "old_name/b.rs", 1, 3000),
+            "old_name/b.rs should be recorded"
+        );
+
+        let new_dir = dir.path().join("new_name");
+        std::fs::rename(&old_dir, &new_dir).unwrap();
+
+        assert!(
+            wait_for_index(dir.path(), "old_name/a.txt", 2, 5000),
+            "old_name/a.txt should have create + delete"
+        );
+        assert!(
+            wait_for_index(dir.path(), "old_name/b.rs", 2, 5000),
+            "old_name/b.rs should have create + delete"
+        );
+        assert!(
+            wait_for_index(dir.path(), "new_name/a.txt", 1, 5000),
+            "new_name/a.txt should be recorded after folder rename"
+        );
+        assert!(
+            wait_for_index(dir.path(), "new_name/b.rs", 1, 5000),
+            "new_name/b.rs should be recorded after folder rename"
+        );
+
+        let index = load_test_index(dir.path());
+        for file in &["old_name/a.txt", "old_name/b.rs"] {
+            let entries: Vec<_> = index.history.iter().filter(|e| e.file == *file).collect();
+            assert_eq!(
+                entries.len(),
+                2,
+                "{} should have 2 entries (create + delete)",
+                file
+            );
+            assert_eq!(entries[0].op, "create");
+            assert_eq!(entries[1].op, "delete");
+        }
+        for file in &["new_name/a.txt", "new_name/b.rs"] {
+            let entries: Vec<_> = index.history.iter().filter(|e| e.file == *file).collect();
+            assert_eq!(entries.len(), 1, "{} should have 1 create entry", file);
+            assert_eq!(entries[0].op, "create");
+        }
+
+        stop_server(&mut server);
+    }
+
+    /// Move a folder (with tracked files) out of the watched directory.
+    /// Index should record delete for all files under that path.
+    #[test]
+    fn test_rename_folder_move_out() {
+        let dir = setup_test_dir();
+        let outside = tempfile::tempdir().unwrap();
+        let (mut server, _port) = start_server_and_checkout(dir.path());
+
+        let subdir = dir.path().join("subdir");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(subdir.join("f.txt"), "moved out").unwrap();
+
+        assert!(
+            wait_for_index(dir.path(), "subdir/f.txt", 1, 3000),
+            "subdir/f.txt should be recorded"
+        );
+
+        let dest = outside.path().join("subdir");
+        std::fs::rename(&subdir, &dest).unwrap();
+
+        assert!(
+            wait_for_index(dir.path(), "subdir/f.txt", 2, 5000),
+            "subdir/f.txt should have create + delete after folder move-out"
+        );
+
+        let index = load_test_index(dir.path());
+        let entries: Vec<_> = index
+            .history
+            .iter()
+            .filter(|e| e.file == "subdir/f.txt")
+            .collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].op, "create");
+        assert_eq!(entries[1].op, "delete");
+
+        stop_server(&mut server);
+    }
+
+    /// Move a folder from outside into the watched directory.
+    /// Index should record create for all matching files under the new path.
+    #[test]
+    fn test_rename_folder_move_in() {
+        let dir = setup_test_dir();
+        let outside = tempfile::tempdir().unwrap();
+        let (mut server, _port) = start_server_and_checkout(dir.path());
+
+        let external_dir = outside.path().join("incoming");
+        std::fs::create_dir_all(&external_dir).unwrap();
+        std::fs::write(external_dir.join("x.yaml"), "moved in").unwrap();
+
+        let dest = dir.path().join("incoming");
+        std::fs::rename(&external_dir, &dest).unwrap();
+
+        assert!(
+            wait_for_index(dir.path(), "incoming/x.yaml", 1, 5000),
+            "incoming/x.yaml should be recorded after folder move-in"
+        );
+
+        let index = load_test_index(dir.path());
+        let entry = index
+            .history
+            .iter()
+            .find(|e| e.file == "incoming/x.yaml")
+            .expect("incoming/x.yaml should have a history entry");
+        assert_eq!(entry.op, "create");
+        assert!(entry.checksum.is_some());
+
+        stop_server(&mut server);
+    }
 }
 
 mod dedup_tests {

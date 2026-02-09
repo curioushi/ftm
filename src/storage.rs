@@ -191,6 +191,50 @@ impl Storage {
         Ok(Some(entry))
     }
 
+    /// Record delete for every file in the index whose path equals or is under `path_prefix`.
+    /// Used when a directory (or single file) is removed/renamed so all tracked files under
+    /// that path get a delete entry. Returns the number of delete entries added.
+    pub fn record_deletes_under_prefix(
+        &self,
+        path_prefix: &Path,
+        root_dir: &Path,
+    ) -> Result<usize> {
+        let rel_prefix = path_prefix.strip_prefix(root_dir).unwrap_or(path_prefix);
+        let rel_prefix_str = rel_prefix.to_string_lossy().replace('\\', "/");
+        let rel_prefix_trimmed = rel_prefix_str.trim_end_matches('/');
+        if rel_prefix_trimmed.is_empty() {
+            return Ok(0);
+        }
+        let prefix_with_slash = format!("{}/", rel_prefix_trimmed);
+
+        let mut index = self.load_index()?;
+        let mut files_to_delete: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for entry in &index.history {
+            let file_norm = entry.file.replace('\\', "/");
+            if file_norm == rel_prefix_trimmed || file_norm.starts_with(&prefix_with_slash) {
+                files_to_delete.insert(entry.file.clone());
+            }
+        }
+
+        for file_key in &files_to_delete {
+            let entry = HistoryEntry {
+                timestamp: Utc::now(),
+                op: Operation::Delete,
+                file: file_key.clone(),
+                checksum: None,
+                size: None,
+            };
+            index.history.push(entry);
+        }
+        let count = files_to_delete.len();
+        if count > 0 {
+            self.trim_history(&mut index);
+            self.save_index(&index)?;
+        }
+        Ok(count)
+    }
+
     fn trim_history(&self, index: &mut Index) {
         use std::collections::HashMap;
 

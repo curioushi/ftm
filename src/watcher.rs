@@ -10,7 +10,7 @@ use tracing::info;
 
 enum WorkerTask {
     Snapshot(PathBuf),
-    Delete(PathBuf),
+    DeletePrefix(PathBuf),
 }
 
 pub struct FileWatcher {
@@ -33,29 +33,68 @@ impl FileWatcher {
         cfg.matches_path(path, &self.root_dir)
     }
 
+    /// Recursively walk a directory and send Snapshot for each matching file. Skips .ftm.
+    fn walk_dir_and_snapshot(
+        watcher: &FileWatcher,
+        dir: &Path,
+        task_tx: &mpsc::Sender<WorkerTask>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().and_then(|n| n.to_str()) != Some(".ftm") {
+                    Self::walk_dir_and_snapshot(watcher, &path, task_tx);
+                }
+            } else if watcher.should_watch(&path) {
+                let _ = task_tx.send(WorkerTask::Snapshot(path));
+            }
+        }
+    }
+
     fn handle_event(&self, event: Event, task_tx: &mpsc::Sender<WorkerTask>) {
         use notify::event::ModifyKind;
 
         if matches!(event.kind, notify::EventKind::Remove(_)) {
-            // Direct removal (e.g., `rm` command)
+            // Direct removal (e.g., `rm` command). Use DeletePrefix so directory removal
+            // records deletes for all tracked files under that path.
             for path in event.paths {
-                if self.should_watch(&path) {
-                    let _ = task_tx.send(WorkerTask::Delete(path));
+                if path.starts_with(&self.root_dir) {
+                    let _ = task_tx.send(WorkerTask::DeletePrefix(path));
                 }
             }
         } else if matches!(event.kind, notify::EventKind::Modify(ModifyKind::Name(_))) {
-            // Rename/move events.  File managers (e.g. Finder on macOS,
-            // Nautilus on Linux, Explorer on Windows) often "delete" by
-            // moving files to a trash folder, which the OS reports as a
-            // rename rather than a removal.  If the file no longer exists
-            // at its original path, treat it as a delete; if a new file
-            // appears (moved into the watched tree), snapshot it.
-            for path in event.paths {
-                if self.should_watch(&path) {
-                    if path.is_file() {
+            // Rename/move events.  Support directory rename: from/to paths,
+            // and single-path "disappeared" or "directory appeared".
+            let paths = event.paths;
+            if paths.len() >= 2 {
+                let from = &paths[0];
+                let to = &paths[1];
+                if !from.exists() && to.exists() && to.is_dir() {
+                    // Directory rename: record deletes under old path, snapshot all under new path.
+                    if from.starts_with(&self.root_dir) {
+                        let _ = task_tx.send(WorkerTask::DeletePrefix(from.clone()));
+                    }
+                    Self::walk_dir_and_snapshot(self, to, task_tx);
+                } else {
+                    for path in paths {
+                        if path.is_file() && self.should_watch(&path) {
+                            let _ = task_tx.send(WorkerTask::Snapshot(path));
+                        } else if !path.exists() && path.starts_with(&self.root_dir) {
+                            let _ = task_tx.send(WorkerTask::DeletePrefix(path));
+                        }
+                    }
+                }
+            } else {
+                for path in paths {
+                    if !path.exists() && path.starts_with(&self.root_dir) {
+                        let _ = task_tx.send(WorkerTask::DeletePrefix(path));
+                    } else if path.exists() && path.is_dir() {
+                        Self::walk_dir_and_snapshot(self, &path, task_tx);
+                    } else if path.is_file() && self.should_watch(&path) {
                         let _ = task_tx.send(WorkerTask::Snapshot(path));
-                    } else if !path.exists() {
-                        let _ = task_tx.send(WorkerTask::Delete(path));
                     }
                 }
             }
@@ -116,9 +155,15 @@ impl FileWatcher {
                             );
                         }
                     }
-                    WorkerTask::Delete(path) => {
-                        if let Ok(Some(entry)) = storage.record_delete(&path, &root_dir) {
-                            info!("File deleted: {}", entry.file);
+                    WorkerTask::DeletePrefix(path) => {
+                        if let Ok(count) = storage.record_deletes_under_prefix(&path, &root_dir) {
+                            if count > 0 {
+                                info!(
+                                    "Files under {} recorded as deleted ({} entries)",
+                                    path.display(),
+                                    count
+                                );
+                            }
                         }
                     }
                 }
