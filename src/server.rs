@@ -257,9 +257,7 @@ async fn checkout(
 
     // Start watcher in background thread
     let watch_dir = directory.clone();
-    let max_history = shared_config.read().unwrap().settings.max_history;
-    let watcher_storage = Storage::new(ftm_dir.clone(), max_history);
-    let watcher = FileWatcher::new(watch_dir.clone(), shared_config.clone(), watcher_storage);
+    let watcher = FileWatcher::new(watch_dir.clone(), shared_config.clone());
     watcher.watch_background();
 
     info!("Watching directory: {}", watch_dir.display());
