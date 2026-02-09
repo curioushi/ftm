@@ -19,6 +19,7 @@
   let selectedRestoreChecksum = null;
   let selectedFiles = new Set(); // multi-selected files (ctrl+click)
   let tlTooltipTimeoutId = null; // timeout for auto-hiding keyboard tooltip
+  let isMouseOverTimeline = false; // track if mouse is over the timeline area
   const SELECTED_FILE_STORAGE_KEY = 'ftm-selected-file';
   const TL_HEIGHT_STORAGE_KEY = 'ftm-timeline-height';
   const TL_LANES_WIDTH_STORAGE_KEY = 'ftm-tl-lanes-width';
@@ -41,7 +42,6 @@
   const NODE_RADIUS = 5;
   const NODE_HIT_RADIUS = 8;
   const MIN_VIEW_SPAN = 60 * 1000; // 1 minute minimum zoom
-  const ZOOM_FACTOR = 0.15;
 
   // Colors (must match CSS variables)
   const COLORS = {
@@ -336,6 +336,46 @@
         parent.appendChild(fileRow);
       }
     }
+  }
+
+  // ---- Tree depth buttons ---------------------------------------------------
+  function collectAllDirPaths(nodes, prefix, depth, result) {
+    for (const node of nodes) {
+      const fullPath = prefix ? prefix + '/' + node.name : node.name;
+      if (node.children) {
+        result.push({ path: fullPath, depth: depth });
+        collectAllDirPaths(node.children, fullPath, depth + 1, result);
+      }
+    }
+    return result;
+  }
+
+  function initTreeDepthButtons() {
+    const buttons = document.querySelectorAll('.tree-depth-btn');
+    buttons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const action = btn.dataset.action;
+        const dirs = collectAllDirPaths(fileTree, '', 0, []);
+
+        if (action === 'expand-all') {
+          collapsedDirs.clear();
+        } else if (action === 'collapse-all') {
+          collapsedDirs.clear();
+          for (const d of dirs) {
+            collapsedDirs.add(d.path);
+          }
+        } else if (action.startsWith('depth-')) {
+          const maxDepth = parseInt(action.replace('depth-', ''), 10);
+          collapsedDirs.clear();
+          for (const d of dirs) {
+            if (d.depth >= maxDepth) {
+              collapsedDirs.add(d.path);
+            }
+          }
+        }
+        renderFileList();
+      });
+    });
   }
 
   // ---- Sidebar resize -------------------------------------------------------
@@ -933,9 +973,16 @@
       tlViewStart += panAmount;
       tlViewEnd += panAmount;
     } else if (e.ctrlKey || e.metaKey) {
-      // Ctrl/Cmd + wheel: zoom around mouse position
-      const zoomDir = e.deltaY > 0 ? 1 : -1;
-      const factor = 1 + ZOOM_FACTOR * zoomDir;
+      // Ctrl/Cmd + wheel: zoom around mouse position (proportional to current range)
+      let dy = e.deltaY;
+      if (e.deltaMode === 1) dy *= 16; // line mode
+      if (e.deltaMode === 2) dy *= 100; // page mode
+
+      // Clamp to prevent extreme jumps from trackpad pinch or high-momentum scroll
+      dy = Math.max(-100, Math.min(100, dy));
+
+      const zoomIntensity = 0.0015;
+      const factor = Math.exp(dy * zoomIntensity);
 
       const mouseTime = xToTime(x, w);
       const leftRatio = (mouseTime - tlViewStart) / (tlViewEnd - tlViewStart);
@@ -984,6 +1031,7 @@
       currentFile = lane.file;
       rememberSelectedFile(lane.file);
       renderFileList();
+      updateLaneLabels();
       $diffTitle.textContent = lane.file;
 
       // Load the full history for this file to enable diff viewing
@@ -1385,6 +1433,14 @@
       requestTimelineDraw();
     });
     resizeObserver.observe($timelineBody);
+
+    // Track mouse position for keyboard navigation context
+    $timelineBar.addEventListener('mouseenter', () => {
+      isMouseOverTimeline = true;
+    });
+    $timelineBar.addEventListener('mouseleave', () => {
+      isMouseOverTimeline = false;
+    });
 
     initRangeButtons();
     initTimelineResize();
@@ -1857,8 +1913,16 @@
 
   function onFileListKeydown(e) {
     if (shouldIgnoreKeyboard(e)) return;
-    if (visibleFilePaths.length === 0) return;
     if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+
+    // When mouse is over timeline in multi-lane mode, switch lanes instead
+    if (isMouseOverTimeline && tlMode === 'multi' && tlLanes.length > 1) {
+      e.preventDefault();
+      onTimelineLaneSwitch(e.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
+
+    if (visibleFilePaths.length === 0) return;
 
     e.preventDefault();
     let idx = visibleFilePaths.indexOf(currentFile);
@@ -1872,11 +1936,75 @@
     }
   }
 
+  /** Switch to an adjacent lane in multi-file timeline, selecting the closest node in time */
+  function onTimelineLaneSwitch(direction) {
+    let currentLaneIdx = -1;
+    if (tlActiveNode) {
+      currentLaneIdx = tlActiveNode.laneIdx;
+    } else {
+      // Try to find lane by currentFile
+      for (let i = 0; i < tlLanes.length; i++) {
+        if (tlLanes[i].file === currentFile) {
+          currentLaneIdx = i;
+          break;
+        }
+      }
+    }
+
+    // Compute target lane index
+    let targetLaneIdx;
+    if (currentLaneIdx === -1) {
+      targetLaneIdx = direction > 0 ? 0 : tlLanes.length - 1;
+    } else {
+      targetLaneIdx = currentLaneIdx + direction;
+    }
+
+    // Clamp
+    if (targetLaneIdx < 0 || targetLaneIdx >= tlLanes.length) return;
+
+    const targetLane = tlLanes[targetLaneIdx];
+    if (targetLane.entries.length === 0) return;
+
+    // Find the entry in target lane closest in time to the current active node
+    let targetEntryIdx = 0;
+    if (tlActiveNode) {
+      const refTs = new Date(tlActiveNode.entry.timestamp).getTime();
+      let bestDist = Infinity;
+      for (let i = 0; i < targetLane.entries.length; i++) {
+        const ts = new Date(targetLane.entries[i].timestamp).getTime();
+        const dist = Math.abs(ts - refTs);
+        if (dist < bestDist) {
+          bestDist = dist;
+          targetEntryIdx = i;
+        }
+      }
+    } else {
+      // Default to latest entry
+      targetEntryIdx = targetLane.entries.length - 1;
+    }
+
+    const targetEntry = targetLane.entries[targetEntryIdx];
+    const syntheticNode = {
+      laneIdx: targetLaneIdx,
+      entryIdx: targetEntryIdx,
+      entry: targetEntry,
+    };
+
+    onNodeClick(syntheticNode);
+    updateLaneLabels();
+
+    // Flash tooltip to give visual feedback
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => flashTooltipAtActiveNode());
+    });
+  }
+
   // ---- Init ----------------------------------------------------------------
   async function init() {
     hideDeletedFiles = $hideDeleted.checked;
     initSidebarResize();
     initTimeline();
+    initTreeDepthButtons();
 
     try {
       const health = await apiJson('/api/health');

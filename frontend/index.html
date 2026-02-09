@@ -30,7 +30,18 @@
 
       <div id="main">
         <aside id="sidebar">
-          <div id="sidebar-header">Files</div>
+          <div id="sidebar-header">
+            <span>Files</span>
+            <div id="tree-depth-buttons">
+              <button class="tree-depth-btn" data-action="collapse-all" title="Collapse all">
+                &minus;
+              </button>
+              <button class="tree-depth-btn" data-action="depth-1" title="Expand depth 1">1</button>
+              <button class="tree-depth-btn" data-action="depth-2" title="Expand depth 2">2</button>
+              <button class="tree-depth-btn" data-action="depth-3" title="Expand depth 3">3</button>
+              <button class="tree-depth-btn" data-action="expand-all" title="Expand all">+</button>
+            </div>
+          </div>
           <div id="file-list"></div>
         </aside>
         <div id="resize-handle"></div>

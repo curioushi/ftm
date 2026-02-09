@@ -154,13 +154,44 @@ input[type='text']:focus {
 }
 
 #sidebar-header {
-  padding: 6px 10px;
+  padding: 4px 10px;
   font-weight: 600;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--fg-dim);
   border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+#tree-depth-buttons {
+  display: flex;
+  gap: 2px;
+}
+
+.tree-depth-btn {
+  padding: 0;
+  width: 20px;
+  height: 18px;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg-dim);
+  cursor: pointer;
+  transition:
+    background 0.1s,
+    color 0.1s;
+}
+
+.tree-depth-btn:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 #file-list {
