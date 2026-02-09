@@ -2059,6 +2059,18 @@
 
   function onFileListKeydown(e) {
     if (shouldIgnoreKeyboard(e)) return;
+
+    // Shortcuts 1-7: select time range (toggle on second press). Ignored when focus is in filter input (handled by shouldIgnoreKeyboard).
+    const digit = e.key >= '1' && e.key <= '7' ? parseInt(e.key, 10) : 0;
+    if (digit) {
+      const rangeBtns = document.querySelectorAll('.tl-range-btn');
+      if (rangeBtns.length >= digit) {
+        e.preventDefault();
+        onRangeButtonClick(rangeBtns[digit - 1]);
+      }
+      return;
+    }
+
     if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
 
     // When mouse is over timeline in multi-lane mode, switch lanes instead
