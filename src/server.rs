@@ -80,6 +80,12 @@ struct HealthResponse {
 }
 
 #[derive(Deserialize)]
+struct FilesQuery {
+    /// When false or absent, files whose last history entry is Delete are excluded.
+    include_deleted: Option<bool>,
+}
+
+#[derive(Deserialize)]
 struct HistoryQuery {
     file: String,
 }
@@ -349,10 +355,14 @@ async fn checkout(
     }))
 }
 
-async fn files(State(state): State<SharedState>) -> Result<Json<Vec<FileTreeNode>>, ApiError> {
+async fn files(
+    State(state): State<SharedState>,
+    Query(q): Query<FilesQuery>,
+) -> Result<Json<Vec<FileTreeNode>>, ApiError> {
+    let include_deleted = q.include_deleted.unwrap_or(false);
     let (storage, _) = state.storage().await.ok_or_else(not_checked_out)?;
     let tree = storage
-        .list_files_tree()
+        .list_files_tree(include_deleted)
         .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(tree))
 }

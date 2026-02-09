@@ -11,9 +11,11 @@
   let activeEntryIdx = -1;     // selected timeline node index
   let diffRows = [];           // flat array of rendered diff row data
   let collapsedDirs = new Set(); // collapsed directory paths
+  let hideDeletedFiles = true;  // when true, API returns only files not deleted
 
   // ---- DOM refs ------------------------------------------------------------
   const $filter = document.getElementById("filter");
+  const $hideDeleted = document.getElementById("hide-deleted");
   const $fileList = document.getElementById("file-list");
   const $diffViewer = document.getElementById("diff-viewer");
   const $diffTitle = document.getElementById("diff-title");
@@ -59,7 +61,9 @@
 
   async function loadFiles() {
     try {
-      fileTree = await apiJson("/api/files");
+      const includeDeleted = !hideDeletedFiles;
+      const q = includeDeleted ? "?include_deleted=true" : "";
+      fileTree = await apiJson("/api/files" + q);
       renderFileList();
     } catch (e) {
       $status.textContent = e.message;
@@ -571,6 +575,12 @@
     filterTimeout = setTimeout(renderFileList, 80);
   });
 
+  // ---- Hide deleted files --------------------------------------------------
+  $hideDeleted.addEventListener("change", () => {
+    hideDeletedFiles = $hideDeleted.checked;
+    loadFiles();
+  });
+
   // ---- Utilities -----------------------------------------------------------
   function escapeHtml(s) {
     const div = document.createElement("div");
@@ -605,6 +615,7 @@
 
   // ---- Init ----------------------------------------------------------------
   async function init() {
+    hideDeletedFiles = $hideDeleted.checked;
     initSidebarResize();
 
     try {

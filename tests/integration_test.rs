@@ -1222,6 +1222,61 @@ mod history_ops_tests {
         stop_server(&mut server);
     }
 
+    /// Default `ftm ls` excludes deleted files; `ftm ls --include-deleted` shows them.
+    #[test]
+    fn test_ls_hides_deleted_by_default() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+        let file_path = dir.path().join("ls_hide_deleted.yaml");
+
+        std::fs::write(&file_path, "content").unwrap();
+        assert!(
+            wait_for_index(dir.path(), "ls_hide_deleted.yaml", 1, 2000),
+            "Create should be recorded"
+        );
+
+        let ls_default = ftm_client(port).arg("ls").output().expect("ftm ls");
+        assert!(ls_default.status.success(), "ftm ls should succeed");
+        let ls_stdout = String::from_utf8_lossy(&ls_default.stdout);
+        assert!(
+            ls_stdout.contains("ls_hide_deleted.yaml"),
+            "ls (default) should show file before delete; got:\n{}",
+            ls_stdout
+        );
+
+        std::fs::remove_file(&file_path).unwrap();
+        assert!(
+            wait_for_index(dir.path(), "ls_hide_deleted.yaml", 2, 2000),
+            "Delete event should be recorded"
+        );
+
+        let ls_after_delete = ftm_client(port).arg("ls").output().expect("ftm ls");
+        assert!(ls_after_delete.status.success(), "ftm ls should succeed");
+        let ls_stdout = String::from_utf8_lossy(&ls_after_delete.stdout);
+        assert!(
+            !ls_stdout.contains("ls_hide_deleted.yaml"),
+            "ls (default) should hide deleted file; got:\n{}",
+            ls_stdout
+        );
+
+        let ls_include_deleted = ftm_client(port)
+            .args(["ls", "--include-deleted"])
+            .output()
+            .expect("ftm ls --include-deleted");
+        assert!(
+            ls_include_deleted.status.success(),
+            "ftm ls --include-deleted should succeed"
+        );
+        let ls_stdout = String::from_utf8_lossy(&ls_include_deleted.stdout);
+        assert!(
+            ls_stdout.contains("ls_hide_deleted.yaml"),
+            "ls --include-deleted should show deleted file; got:\n{}",
+            ls_stdout
+        );
+
+        stop_server(&mut server);
+    }
+
     #[test]
     fn test_history_recreate_after_delete() {
         let dir = setup_test_dir();

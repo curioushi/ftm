@@ -100,6 +100,17 @@ input[type="text"]:focus {
 #filter {
   width: 240px;
 }
+.toolbar-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+.toolbar-checkbox input {
+  margin: 0;
+}
 #status {
   font-size: 11px;
   color: var(--fg-dim);

@@ -30,8 +30,12 @@ enum Commands {
         /// Directory to watch (must be absolute path)
         directory: PathBuf,
     },
-    /// List tracked files
-    Ls,
+    /// List tracked files (excludes deleted by default; use --include-deleted to show all)
+    Ls {
+        /// Include files whose last history entry is Delete
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        include_deleted: bool,
+    },
     /// Scan directory for changes (detect creates, modifies, deletes)
     Scan,
     /// Show version history for a file
@@ -122,7 +126,7 @@ fn main() -> Result<()> {
             client::client_checkout(cli.port, &abs_dir.to_string_lossy())
         }
         Commands::Version => client::client_version(cli.port),
-        Commands::Ls => client::client_ls(cli.port),
+        Commands::Ls { include_deleted } => client::client_ls(cli.port, include_deleted),
         Commands::History { file } => client::client_history(cli.port, &file),
         Commands::Restore { file, checksum } => client::client_restore(cli.port, &file, &checksum),
         Commands::Scan => client::client_scan(cli.port),

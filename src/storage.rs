@@ -255,7 +255,7 @@ impl Storage {
         Ok(entries)
     }
 
-    pub fn list_files(&self) -> Result<Vec<(String, usize)>> {
+    pub fn list_files(&self, include_deleted: bool) -> Result<Vec<(String, usize)>> {
         use std::collections::HashMap;
 
         let index = self.load_index()?;
@@ -265,7 +265,18 @@ impl Storage {
             *file_counts.entry(entry.file.clone()).or_insert(0) += 1;
         }
 
-        let mut files: Vec<(String, usize)> = file_counts.into_iter().collect();
+        let mut files: Vec<(String, usize)> = if include_deleted {
+            file_counts.into_iter().collect()
+        } else {
+            file_counts
+                .into_iter()
+                .filter(|(file, _)| {
+                    self.get_last_entry_for_file(&index, file)
+                        .map(|e| e.op != Operation::Delete)
+                        .unwrap_or(true)
+                })
+                .collect()
+        };
         files.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(files)
     }
@@ -281,8 +292,8 @@ impl Storage {
             .collect()
     }
 
-    pub fn list_files_tree(&self) -> Result<Vec<FileTreeNode>> {
-        let flat = self.list_files()?;
+    pub fn list_files_tree(&self, include_deleted: bool) -> Result<Vec<FileTreeNode>> {
+        let flat = self.list_files(include_deleted)?;
         let mut root: BTreeMap<String, BuildNode> = BTreeMap::new();
         for (path_str, count) in flat {
             let segments = Self::path_segments(&path_str);

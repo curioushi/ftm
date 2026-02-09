@@ -179,7 +179,7 @@ pub fn client_checkout(port: u16, directory: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn client_ls(port: u16) -> Result<()> {
+pub fn client_ls(port: u16, include_deleted: bool) -> Result<()> {
     // Best-effort: show current watch directory
     if let Ok(health) = client_health(port) {
         if let Some(dir) = &health.watch_dir {
@@ -187,8 +187,13 @@ pub fn client_ls(port: u16) -> Result<()> {
         }
     }
 
+    let url = if include_deleted {
+        format!("{}/api/files?include_deleted=true", base_url(port))
+    } else {
+        format!("{}/api/files", base_url(port))
+    };
     let resp = make_client()
-        .get(format!("{}/api/files", base_url(port)))
+        .get(url)
         .send()
         .map_err(handle_connection_error)?;
     let resp = check_response(resp)?;
