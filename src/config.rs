@@ -12,6 +12,7 @@ pub struct WatchConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    /// Global history queue size (max total entries across all files).
     pub max_history: usize,
     pub max_file_size: u64,
     #[serde(default = "default_web_port")]
@@ -63,7 +64,7 @@ impl Default for Config {
                 ],
             },
             settings: Settings {
-                max_history: 100,
+                max_history: 10_000,
                 max_file_size: 30 * 1024 * 1024, // 30MB
                 web_port: 13580,
                 scan_interval: 300,

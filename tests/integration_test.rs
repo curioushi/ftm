@@ -1666,49 +1666,45 @@ mod trim_tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
-        // Write a sync marker to ensure all previous writes were processed
+        // Write a sync marker so we have 6 total entries and trigger trim to 3
         std::fs::write(dir.path().join("sync.yaml"), "sync: done").unwrap();
         assert!(
-            wait_for_index(dir.path(), "sync.yaml", 1, 2000),
+            wait_for_index(dir.path(), "sync.yaml", 1, 5000),
             "Sync marker should be recorded"
         );
 
         let index = load_test_index(dir.path());
+        assert!(
+            index.history.len() <= 3,
+            "global max_history=3: expected at most 3 total entries, got {}",
+            index.history.len()
+        );
+
         let entries: Vec<_> = index
             .history
             .iter()
             .filter(|e| e.file == "trimme.yaml")
             .collect();
-
         assert!(
-            entries.len() <= 3,
-            "max_history=3: expected at most 3 entries, got {}",
+            entries.len() >= 1 && entries.len() <= 2,
+            "trimme.yaml should have 1 or 2 entries (sync may take one slot), got {}",
             entries.len()
         );
-        assert!(
-            !entries.is_empty(),
-            "Should have at least 1 entry for trimme.yaml"
-        );
 
-        // If all 5 writes were captured, verify the retained entries are the newest 3 versions
-        if entries.len() == 3 {
-            use sha2::{Digest, Sha256};
-            let expected_checksums: Vec<String> = (2..5)
-                .map(|i| hex::encode(Sha256::digest(format!("version: {}", i).as_bytes())))
-                .collect();
-            for (entry, expected) in entries.iter().zip(expected_checksums.iter()) {
-                let cs = entry.checksum.as_ref().expect("entry should have checksum");
-                assert_eq!(
-                    cs, expected,
-                    "Trimmed entries should be the newest 3 versions in order"
-                );
-            }
-            let oldest_checksum = hex::encode(Sha256::digest(b"version: 0"));
-            assert!(
-                !entries
-                    .iter()
-                    .any(|e| e.checksum.as_deref() == Some(oldest_checksum.as_str())),
-                "Oldest version (version: 0) should have been trimmed"
+        use sha2::{Digest, Sha256};
+        let expected_checksums: Vec<String> = (3..5)
+            .map(|i| hex::encode(Sha256::digest(format!("version: {}", i).as_bytes())))
+            .collect();
+        let expected = if entries.len() == 2 {
+            &expected_checksums[..]
+        } else {
+            &expected_checksums[1..]
+        };
+        for (entry, expected_cs) in entries.iter().zip(expected.iter()) {
+            let cs = entry.checksum.as_ref().expect("entry should have checksum");
+            assert_eq!(
+                cs, expected_cs,
+                "Trimmed entries for trimme should be the newest versions (v3, v4) in order"
             );
         }
 
@@ -2152,7 +2148,7 @@ mod config_tests {
 
         let out = run_ftm_with_port(port, &["config", "get", "settings.max_history"]);
         assert!(out.status.success());
-        assert!(String::from_utf8_lossy(&out.stdout).contains("100"));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("10000"));
 
         stop_server(&mut server);
     }

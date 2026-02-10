@@ -185,7 +185,7 @@ watch:
     - "**/.git/**"
     - "**/.ftm/**"
 settings:
-  max_history: 100         # Max versions to keep per file
+  max_history: 10000       # Max total history entries (global queue)
   max_file_size: 31457280  # Max file size to track (30 MB)
   scan_interval: 300       # Seconds between periodic scans (minimum 2)
   web_port: 13580           # Web UI port
@@ -197,7 +197,7 @@ settings:
 |-----|------|-------------|
 | `watch.patterns` | list | Glob patterns for files to track (comma-separated when using CLI) |
 | `watch.exclude` | list | Glob patterns for files/dirs to ignore |
-| `settings.max_history` | int | Maximum number of versions to keep per file |
+| `settings.max_history` | int | Maximum total history entries (global queue size) |
 | `settings.max_file_size` | int | Maximum file size in bytes |
 | `settings.scan_interval` | int | Seconds between full scans (minimum 2) |
 | `settings.web_port` | int | HTTP port for the Web UI |

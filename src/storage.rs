@@ -325,30 +325,13 @@ impl Storage {
     }
 
     pub(crate) fn trim_history(&self, index: &mut Index) -> bool {
-        // Single O(n) pass: count per-file entries from newest to oldest,
-        // marking old entries for removal via a keep-bitmap.
-        let mut file_counts: HashMap<&str, usize> = HashMap::new();
-        let mut keep = vec![true; index.history.len()];
-        let mut any_removed = false;
-
-        for (i, entry) in index.history.iter().enumerate().rev() {
-            let count = file_counts.entry(&entry.file).or_insert(0);
-            *count += 1;
-            if *count > self.max_history {
-                keep[i] = false;
-                any_removed = true;
-            }
+        let n = index.history.len();
+        if n <= self.max_history {
+            return false;
         }
-
-        if any_removed {
-            let mut idx = 0;
-            index.history.retain(|_| {
-                let k = keep[idx];
-                idx += 1;
-                k
-            });
-        }
-        any_removed
+        let to_remove = n - self.max_history;
+        index.history.drain(0..to_remove);
+        true
     }
 
     /// Read the raw bytes of a snapshot by its full checksum.
