@@ -230,7 +230,7 @@ Snapshots use content-addressable storage — each unique file version is stored
 | Async runtime | tokio |
 | File watching | notify |
 | Web framework | axum |
-| Diff engine | similar |
+| Diff engine | imara-diff |
 | CLI | clap |
 | Config | serde + serde_yaml |
 | Logging | tracing |

@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::Duration;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Notify, RwLock, Semaphore};
+use tokio::time::timeout;
 use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,9 @@ struct WatchContext {
 pub struct AppState {
     ctx: RwLock<Option<WatchContext>>,
     shutdown: Notify,
+    /// Only one diff computation at a time. Permit is held inside spawn_blocking
+    /// so that on timeout the abandoned task keeps the permit until it finishes.
+    diff_semaphore: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -41,6 +45,7 @@ impl AppState {
         Self {
             ctx: RwLock::new(None),
             shutdown: Notify::new(),
+            diff_semaphore: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -166,6 +171,76 @@ struct DiffLine {
     /// "equal", "insert", or "delete"
     tag: &'static str,
     content: String,
+}
+
+/// CPU-heavy diff computation. Returns hunks only; old_total/new_total are
+/// computed by the caller from line counts. Uses imara-diff (Histogram) for
+/// speed and stability.
+fn compute_diff_hunks(old_text: String, new_text: String) -> Vec<DiffHunk> {
+    const CONTEXT_LINES: u32 = 3;
+    use imara_diff::{Algorithm, Diff, InternedInput};
+
+    let input = InternedInput::new(old_text.as_str(), new_text.as_str());
+    let mut diff = Diff::compute(Algorithm::Histogram, &input);
+    diff.postprocess_lines(&input);
+
+    let line_content = |idx: u32, is_old: bool| -> String {
+        let token = if is_old {
+            input.before[idx as usize]
+        } else {
+            input.after[idx as usize]
+        };
+        let s = &input.interner[token];
+        s.strip_suffix('\n').unwrap_or(s).to_string()
+    };
+
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    for hunk in diff.hunks() {
+        let before_start = hunk.before.start;
+        let before_end = hunk.before.end;
+        let after_start = hunk.after.start;
+        let after_end = hunk.after.end;
+
+        let ctx_old_start = before_start.saturating_sub(CONTEXT_LINES);
+        let ctx_new_end = (after_end + CONTEXT_LINES).min(input.after.len() as u32);
+
+        let mut lines: Vec<DiffLine> = Vec::new();
+
+        for i in ctx_old_start..before_start {
+            lines.push(DiffLine {
+                tag: "equal",
+                content: line_content(i, true),
+            });
+        }
+        for i in before_start..before_end {
+            lines.push(DiffLine {
+                tag: "delete",
+                content: line_content(i, true),
+            });
+        }
+        for i in after_start..after_end {
+            lines.push(DiffLine {
+                tag: "insert",
+                content: line_content(i, false),
+            });
+        }
+        for i in after_end..ctx_new_end {
+            lines.push(DiffLine {
+                tag: "equal",
+                content: line_content(i, false),
+            });
+        }
+
+        let old_start_1based = (ctx_old_start + 1) as usize;
+        let new_start_1based = (after_start.saturating_sub(CONTEXT_LINES) + 1) as usize;
+
+        hunks.push(DiffHunk {
+            old_start: old_start_1based,
+            new_start: new_start_1based,
+            lines,
+        });
+    }
+    hunks
 }
 
 #[derive(Embed)]
@@ -521,96 +596,42 @@ async fn diff_handler(
         .map_err(|e| api_err(StatusCode::NOT_FOUND, e.to_string()))?;
     let new_text = String::from_utf8_lossy(&new_bytes).into_owned();
 
-    let diff = similar::TextDiff::from_lines(&old_text, &new_text);
-
     let old_total = old_text.lines().count();
     let new_total = new_text.lines().count();
 
-    // Build hunks with context collapsing: show up to CONTEXT_LINES around
-    // each change and collapse longer equal runs.
-    const CONTEXT_LINES: usize = 3;
+    // Serialize diff: only one at a time. Permit is held inside the blocking task
+    // so that on timeout the abandoned task keeps it until done; no new diff
+    // can start until that task finishes, preventing runaway CPU from many tasks.
+    let permit = state
+        .diff_semaphore
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            api_err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Another diff is in progress. Try again in a moment.",
+            )
+        })?;
 
-    let all_changes: Vec<_> = diff.iter_all_changes().collect();
-
-    // Assign line numbers to every change entry.
-    struct Numbered {
-        tag: similar::ChangeTag,
-        value: String,
-        old_line: usize,
-        new_line: usize,
-    }
-
-    let mut numbered: Vec<Numbered> = Vec::with_capacity(all_changes.len());
-    let mut old_line: usize = 1;
-    let mut new_line: usize = 1;
-    for c in &all_changes {
-        let ol = old_line;
-        let nl = new_line;
-        match c.tag() {
-            similar::ChangeTag::Equal => {
-                old_line += 1;
-                new_line += 1;
-            }
-            similar::ChangeTag::Delete => {
-                old_line += 1;
-            }
-            similar::ChangeTag::Insert => {
-                new_line += 1;
-            }
+    let hunks = match timeout(
+        Duration::from_secs(1),
+        tokio::task::spawn_blocking(move || {
+            let result = compute_diff_hunks(old_text, new_text);
+            drop(permit);
+            result
+        }),
+    )
+    .await
+    {
+        Ok(Ok(h)) => h,
+        Ok(Err(e)) => return Err(api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        Err(_) => {
+            return Err(api_err(
+                StatusCode::REQUEST_TIMEOUT,
+                "Diff computation timed out (1s limit). File may be too large.",
+            ))
         }
-        numbered.push(Numbered {
-            tag: c.tag(),
-            value: c.value().to_string(),
-            old_line: ol,
-            new_line: nl,
-        });
-    }
-
-    // Mark which indices are "interesting" (within CONTEXT_LINES of a change).
-    let len = numbered.len();
-    let mut visible = vec![false; len];
-    for (i, n) in numbered.iter().enumerate() {
-        if n.tag != similar::ChangeTag::Equal {
-            let lo = i.saturating_sub(CONTEXT_LINES);
-            let hi = (i + CONTEXT_LINES + 1).min(len);
-            for v in &mut visible[lo..hi] {
-                *v = true;
-            }
-        }
-    }
-
-    // Build hunks by grouping consecutive visible runs.
-    let mut hunks: Vec<DiffHunk> = Vec::new();
-    let mut i = 0;
-    while i < len {
-        if !visible[i] {
-            i += 1;
-            continue;
-        }
-        // Start a new hunk
-        let mut lines: Vec<DiffLine> = Vec::new();
-        let hunk_old_start = numbered[i].old_line;
-        let hunk_new_start = numbered[i].new_line;
-        while i < len && visible[i] {
-            let n = &numbered[i];
-            let tag = match n.tag {
-                similar::ChangeTag::Equal => "equal",
-                similar::ChangeTag::Delete => "delete",
-                similar::ChangeTag::Insert => "insert",
-            };
-            let content = n.value.strip_suffix('\n').unwrap_or(&n.value);
-            lines.push(DiffLine {
-                tag,
-                content: content.to_string(),
-            });
-            i += 1;
-        }
-        hunks.push(DiffHunk {
-            old_start: hunk_old_start,
-            new_start: hunk_new_start,
-            lines,
-        });
-    }
+    };
 
     Ok(Json(DiffResponse {
         hunks,

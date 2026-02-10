@@ -133,7 +133,7 @@ Once all checks pass:
 | Async | `tokio` |
 | CLI | `clap` |
 | Web | `axum` + embedded static assets |
-| Diff | `similar` |
+| Diff | `imara-diff` (Histogram algorithm) |
 | Config | `serde` + `serde_yaml` |
 | Logging | `tracing` |
 

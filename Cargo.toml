@@ -22,7 +22,7 @@ hex = "0.4"
 axum = "0.8"
 reqwest = { version = "0.13", features = ["blocking", "json", "query"] }
 tower-http = { version = "0.6", features = ["cors"] }
-similar = "2"
+imara-diff = "0.2"
 rust-embed = "8"
 mime_guess = "2"
 sysinfo = "0.38"
