@@ -240,7 +240,13 @@
 
   // Recursively render tree nodes into a parent element
   function renderTreeNodes(parent, nodes, prefix, depth, forceExpand) {
-    for (const node of nodes) {
+    const sorted = nodes.slice().sort((a, b) => {
+      const aIsDir = !!a.children;
+      const bIsDir = !!b.children;
+      if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
+      return (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
+    });
+    for (const node of sorted) {
       const fullPath = prefix ? prefix + '/' + node.name : node.name;
 
       if (node.children) {
