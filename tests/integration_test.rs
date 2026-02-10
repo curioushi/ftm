@@ -2137,6 +2137,26 @@ mod config_tests {
     }
 
     #[test]
+    fn test_config_set_scan_interval_minimum_2() {
+        let dir = setup_test_dir();
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        let out = run_ftm_with_port(port, &["config", "set", "settings.scan_interval", "1"]);
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("scan_interval must be >= 2") || stderr.contains(">= 2"),
+            "expected scan_interval minimum 2 error, got: {}",
+            stderr
+        );
+
+        let out = run_ftm_with_port(port, &["config", "set", "settings.scan_interval", "2"]);
+        assert!(out.status.success());
+
+        stop_server(&mut server);
+    }
+
+    #[test]
     fn test_config_set_watch_patterns() {
         let dir = setup_test_dir();
         let (mut server, port) = start_server_and_checkout(dir.path());
@@ -2269,41 +2289,38 @@ mod config_hot_reload_tests {
         stop_server(&mut server);
     }
 
-    /// After `config set settings.scan_interval` from 0 to a positive value,
-    /// the periodic scanner should start running.
+    /// After `config set settings.scan_interval` to a shorter value,
+    /// the new interval takes effect immediately (within ~1s).
     #[test]
     fn test_config_set_scan_interval_enables_periodic_scan() {
         let dir = setup_test_dir();
 
-        // Create a file BEFORE checkout
         std::fs::write(
             dir.path().join("pre_existing.txt"),
             "created before checkout",
         )
         .unwrap();
 
-        // Pre-init with scan_interval=0 (disabled)
-        pre_init_ftm_with_scan(dir.path(), 100, 30 * 1024 * 1024, 0);
+        // Pre-init with 8s interval; no scan in 1s
+        pre_init_ftm_with_scan(dir.path(), 100, 30 * 1024 * 1024, 8);
 
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        // Wait a bit — no scan should have run
         std::thread::sleep(std::time::Duration::from_secs(1));
         let index = load_test_index(dir.path());
         assert!(
             !index.history.iter().any(|e| e.file == "pre_existing.txt"),
-            "With scan_interval=0, file should not be scanned"
+            "With 8s scan_interval, file should not be scanned in 1s"
         );
 
-        // Enable periodic scanning with 1s interval (server re-checks config every 2s when disabled)
-        let out = run_ftm_with_port(port, &["config", "set", "settings.scan_interval", "1"]);
+        // Shorten to 2s; takes effect on next tick (~1s), then 2s wait, then scan
+        let out = run_ftm_with_port(port, &["config", "set", "settings.scan_interval", "2"]);
         assert!(out.status.success());
 
-        // Wait for the periodic scanner to fire (up to 6s: 2s re-check + 1s interval + buffer)
-        let found = wait_for_index(dir.path(), "pre_existing.txt", 1, 6000);
+        let found = wait_for_index(dir.path(), "pre_existing.txt", 1, 5000);
         assert!(
             found,
-            "After setting scan_interval=1, periodic scanner should pick up pre_existing.txt"
+            "After setting scan_interval=2, periodic scanner should pick up pre_existing.txt"
         );
 
         stop_server(&mut server);
@@ -2537,12 +2554,11 @@ mod periodic_scan_tests {
         )
         .unwrap();
 
-        // Pre-init .ftm with 1s scan interval
-        pre_init_ftm_with_scan(dir.path(), 100, 30 * 1024 * 1024, 1);
+        // Pre-init with 2s scan interval (minimum)
+        pre_init_ftm_with_scan(dir.path(), 100, 30 * 1024 * 1024, 2);
 
         let (mut server, _port) = start_server_and_checkout(dir.path());
 
-        // Wait for the periodic scanner to fire (interval=1s, give it up to 5s)
         let found = wait_for_index(dir.path(), "pre_existing.txt", 1, 5000);
         assert!(
             found,
@@ -2566,18 +2582,17 @@ mod periodic_scan_tests {
     }
 
     #[test]
-    fn test_periodic_scan_disabled_when_zero() {
+    fn test_periodic_scan_respects_interval() {
         let dir = setup_test_dir();
 
         // Create a file BEFORE checkout
         std::fs::write(dir.path().join("should_not_scan.txt"), "no scan").unwrap();
 
-        // Pre-init with scan_interval=0 (disabled)
-        pre_init_ftm_with_scan(dir.path(), 100, 30 * 1024 * 1024, 0);
+        // Pre-init with 5s interval so no scan runs within 2s
+        pre_init_ftm_with_scan(dir.path(), 100, 30 * 1024 * 1024, 5);
 
         let (mut server, _port) = start_server_and_checkout(dir.path());
 
-        // Wait 2s — if scanning were enabled (e.g. 1s interval), file would have been picked up
         std::thread::sleep(std::time::Duration::from_secs(2));
 
         let index = load_test_index(dir.path());
@@ -2588,7 +2603,7 @@ mod periodic_scan_tests {
             .collect();
         assert!(
             entries.is_empty(),
-            "With scan_interval=0, no periodic scan should run"
+            "With 5s scan_interval, no periodic scan should run within 2s"
         );
 
         stop_server(&mut server);

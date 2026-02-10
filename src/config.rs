@@ -16,7 +16,7 @@ pub struct Settings {
     pub max_file_size: u64,
     #[serde(default = "default_web_port")]
     pub web_port: u16,
-    /// Interval in seconds between periodic full scans. 0 = disabled.
+    /// Interval in seconds between periodic full scans. Minimum 2.
     #[serde(default = "default_scan_interval")]
     pub scan_interval: u64,
 }
@@ -75,7 +75,11 @@ impl Default for Config {
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        Ok(serde_yaml::from_str(&content)?)
+        let mut config: Config = serde_yaml::from_str(&content)?;
+        if config.settings.scan_interval < 2 {
+            config.settings.scan_interval = 2;
+        }
+        Ok(config)
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -151,9 +155,13 @@ impl Config {
                     .map_err(|_| anyhow::anyhow!("Invalid value for web_port: {}", value))?;
             }
             "settings.scan_interval" => {
-                self.settings.scan_interval = value
+                let v: u64 = value
                     .parse()
                     .map_err(|_| anyhow::anyhow!("Invalid value for scan_interval: {}", value))?;
+                if v < 2 {
+                    anyhow::bail!("scan_interval must be >= 2, got {}", v);
+                }
+                self.settings.scan_interval = v;
             }
             "watch.patterns" => {
                 self.watch.patterns = value.split(',').map(|s| s.trim().to_string()).collect();

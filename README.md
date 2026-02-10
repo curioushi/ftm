@@ -88,7 +88,7 @@ FTM follows a client-server architecture. Running `ftm checkout` automatically s
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--port <port>` | `8765` | HTTP port used by the server and all client commands |
+| `--port <port>` | `13580` | HTTP port used by the server and all client commands |
 
 ### Examples
 
@@ -108,7 +108,7 @@ ftm restore config/settings.yaml a3f8e2b1
 # Change max history versions per file
 ftm config set settings.max_history 200
 
-# Adjust scan interval (seconds, 0 to disable)
+# Adjust scan interval (seconds, minimum 2)
 ftm config set settings.scan_interval 60
 ```
 
@@ -186,8 +186,8 @@ watch:
 settings:
   max_history: 100         # Max versions to keep per file
   max_file_size: 31457280  # Max file size to track (30 MB)
-  scan_interval: 300       # Seconds between periodic scans (0 = disabled)
-  web_port: 8765           # Web UI port
+  scan_interval: 300       # Seconds between periodic scans (minimum 2)
+  web_port: 13580           # Web UI port
 ```
 
 ### Configuration Keys
@@ -198,7 +198,7 @@ settings:
 | `watch.exclude` | list | Glob patterns for files/dirs to ignore |
 | `settings.max_history` | int | Maximum number of versions to keep per file |
 | `settings.max_file_size` | int | Maximum file size in bytes |
-| `settings.scan_interval` | int | Seconds between full scans (0 = disabled) |
+| `settings.scan_interval` | int | Seconds between full scans (minimum 2) |
 | `settings.web_port` | int | HTTP port for the Web UI |
 
 ---

@@ -293,13 +293,14 @@ async fn checkout(
         });
     }
 
-    // Spawn periodic scanner — always started; dynamically reads scan_interval
-    // from shared config so changes via `config set` take effect immediately.
+    // Spawn periodic scanner — always started; reads scan_interval every ~1s so
+    // changes via `config set` take effect immediately (no wait for current sleep).
     {
         let scan_watch_dir = directory.clone();
         let scan_config = shared_config.clone();
         let scan_ftm_dir = ftm_dir.clone();
         tokio::spawn(async move {
+            let mut last_scan = tokio::time::Instant::now();
             loop {
                 let (scan_interval, cfg_snapshot, max_history) = {
                     let cfg = scan_config.read().unwrap();
@@ -310,18 +311,19 @@ async fn checkout(
                     )
                 };
 
-                if scan_interval == 0 {
-                    // Scanning disabled; re-check config periodically (short sleep so config set takes effect soon)
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                let elapsed = last_scan.elapsed().as_secs();
+                if elapsed < scan_interval {
+                    let remaining = scan_interval - elapsed;
+                    let sleep_secs = std::cmp::min(1, remaining);
+                    tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
                     continue;
                 }
-
-                tokio::time::sleep(Duration::from_secs(scan_interval)).await;
 
                 if !scan_ftm_dir.exists() {
                     break;
                 }
 
+                last_scan = tokio::time::Instant::now();
                 let wd = scan_watch_dir.clone();
                 let cfg = cfg_snapshot;
                 let fd = scan_ftm_dir.clone();
