@@ -123,8 +123,7 @@ fn main() -> Result<()> {
 
             // Kill all ftm server processes, then start a fresh one.
             kill_all_servers(None);
-            #[cfg(windows)]
-            std::thread::sleep(std::time::Duration::from_millis(50)); // Let OS release the port
+            wait_for_port_free(cli.port);
             auto_start_server(cli.port, &abs_dir)?;
 
             client::client_checkout(cli.port, &abs_dir.to_string_lossy())?;
@@ -182,6 +181,25 @@ fn kill_all_servers(keep_pid: Option<u32>) {
 
         eprintln!("Killing ftm process (pid: {})", p);
         process.kill();
+    }
+}
+
+/// Wait until the given port is free (nothing listening). On Windows, the OS
+/// may not release the port immediately after the process exits; this avoids
+/// "address already in use" when starting a new server on the same port.
+fn wait_for_port_free(port: u16) {
+    use std::io::ErrorKind;
+    use std::net::TcpListener;
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(2);
+    while start.elapsed() < timeout {
+        match TcpListener::bind(("127.0.0.1", port)) {
+            Ok(_listener) => return,
+            Err(e) if e.kind() == ErrorKind::AddrInUse => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(_) => return,
+        }
     }
 }
 
