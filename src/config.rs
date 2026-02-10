@@ -20,6 +20,9 @@ pub struct Settings {
     /// Interval in seconds between periodic full scans. Minimum 2.
     #[serde(default = "default_scan_interval")]
     pub scan_interval: u64,
+    /// Interval in seconds between periodic clean (orphan snapshot removal). Minimum 2.
+    #[serde(default = "default_clean_interval")]
+    pub clean_interval: u64,
 }
 
 fn default_web_port() -> u16 {
@@ -28,6 +31,10 @@ fn default_web_port() -> u16 {
 
 fn default_scan_interval() -> u64 {
     300
+}
+
+fn default_clean_interval() -> u64 {
+    3600
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +75,7 @@ impl Default for Config {
                 max_file_size: 30 * 1024 * 1024, // 30MB
                 web_port: 13580,
                 scan_interval: 300,
+                clean_interval: 3600,
             },
         }
     }
@@ -79,6 +87,9 @@ impl Config {
         let mut config: Config = serde_yaml::from_str(&content)?;
         if config.settings.scan_interval < 2 {
             config.settings.scan_interval = 2;
+        }
+        if config.settings.clean_interval < 2 {
+            config.settings.clean_interval = 2;
         }
         Ok(config)
     }
@@ -126,12 +137,13 @@ impl Config {
             "settings.max_file_size" => Ok(self.settings.max_file_size.to_string()),
             "settings.web_port" => Ok(self.settings.web_port.to_string()),
             "settings.scan_interval" => Ok(self.settings.scan_interval.to_string()),
+            "settings.clean_interval" => Ok(self.settings.clean_interval.to_string()),
             "watch.patterns" => Ok(self.watch.patterns.join(",")),
             "watch.exclude" => Ok(self.watch.exclude.join(",")),
             _ => anyhow::bail!(
                 "Unknown config key '{}'. Valid keys: settings.max_history, \
                  settings.max_file_size, settings.web_port, settings.scan_interval, \
-                 watch.patterns, watch.exclude",
+                 settings.clean_interval, watch.patterns, watch.exclude",
                 key
             ),
         }
@@ -164,6 +176,15 @@ impl Config {
                 }
                 self.settings.scan_interval = v;
             }
+            "settings.clean_interval" => {
+                let v: u64 = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid value for clean_interval: {}", value))?;
+                if v < 2 {
+                    anyhow::bail!("clean_interval must be >= 2, got {}", v);
+                }
+                self.settings.clean_interval = v;
+            }
             "watch.patterns" => {
                 self.watch.patterns = value.split(',').map(|s| s.trim().to_string()).collect();
             }
@@ -173,7 +194,7 @@ impl Config {
             _ => anyhow::bail!(
                 "Unknown config key '{}'. Valid keys: settings.max_history, \
                  settings.max_file_size, settings.web_port, settings.scan_interval, \
-                 watch.patterns, watch.exclude",
+                 settings.clean_interval, watch.patterns, watch.exclude",
                 key
             ),
         }

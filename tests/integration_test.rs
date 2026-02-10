@@ -213,43 +213,26 @@ fn kill_process(pid: u32) {
 }
 
 /// Pre-initialize .ftm in a directory with custom settings.
-/// Useful for tests that need non-default config (e.g. max_history, max_file_size).
-fn pre_init_ftm(dir: &Path, max_history: usize, max_file_size: u64) {
+/// Optional scan_interval and clean_interval use server defaults when None.
+fn pre_init_ftm(
+    dir: &Path,
+    max_history: usize,
+    max_file_size: u64,
+    scan_interval: Option<u64>,
+    clean_interval: Option<u64>,
+) {
     let ftm_dir = dir.join(".ftm");
     std::fs::create_dir_all(&ftm_dir).unwrap();
-    let config_yaml = format!(
-        r#"watch:
-  patterns:
-  - '*.rs'
-  - '*.py'
-  - '*.md'
-  - '*.txt'
-  - '*.json'
-  - '*.yml'
-  - '*.yaml'
-  - '*.toml'
-  - '*.js'
-  - '*.ts'
-  exclude:
-  - '**/target/**'
-  - '**/node_modules/**'
-  - '**/.git/**'
-  - '**/.ftm/**'
-settings:
-  max_history: {}
-  max_file_size: {}
-  web_port: 13580
-"#,
+    let mut settings = format!(
+        "  max_history: {}\n  max_file_size: {}\n  web_port: 13580",
         max_history, max_file_size
     );
-    std::fs::write(ftm_dir.join("config.yaml"), config_yaml).unwrap();
-    std::fs::write(ftm_dir.join("index.json"), r#"{"history":[]}"#).unwrap();
-}
-
-/// Pre-initialize .ftm with custom settings including scan_interval.
-fn pre_init_ftm_with_scan(dir: &Path, max_history: usize, max_file_size: u64, scan_interval: u64) {
-    let ftm_dir = dir.join(".ftm");
-    std::fs::create_dir_all(&ftm_dir).unwrap();
+    if let Some(s) = scan_interval {
+        settings.push_str(&format!("\n  scan_interval: {}", s));
+    }
+    if let Some(c) = clean_interval {
+        settings.push_str(&format!("\n  clean_interval: {}", c));
+    }
     let config_yaml = format!(
         r#"watch:
   patterns:
@@ -269,12 +252,9 @@ fn pre_init_ftm_with_scan(dir: &Path, max_history: usize, max_file_size: u64, sc
   - '**/.git/**'
   - '**/.ftm/**'
 settings:
-  max_history: {}
-  max_file_size: {}
-  web_port: 13580
-  scan_interval: {}
+{}
 "#,
-        max_history, max_file_size, scan_interval
+        settings
     );
     std::fs::write(ftm_dir.join("config.yaml"), config_yaml).unwrap();
     std::fs::write(ftm_dir.join("index.json"), r#"{"history":[]}"#).unwrap();
@@ -1655,7 +1635,7 @@ mod trim_tests {
         let dir = setup_test_dir();
 
         // Pre-init .ftm with max_history=3
-        pre_init_ftm(dir.path(), 3, 30 * 1024 * 1024);
+        pre_init_ftm(dir.path(), 3, 30 * 1024 * 1024, None, None);
 
         let (mut server, _port) = start_server_and_checkout(dir.path());
         let file_path = dir.path().join("trimme.yaml");
@@ -1891,7 +1871,7 @@ mod scan_tests {
         let dir = setup_test_dir();
 
         // Pre-init .ftm with max_file_size=100
-        pre_init_ftm(dir.path(), 100, 100);
+        pre_init_ftm(dir.path(), 100, 100, None, None);
 
         // Create files BEFORE checkout
         std::fs::write(dir.path().join("small.txt"), "tiny").unwrap();
@@ -2035,7 +2015,7 @@ mod clean_tests {
     #[test]
     fn test_clean_removes_orphan_snapshots() {
         let dir = setup_test_dir();
-        pre_init_ftm(dir.path(), 1, 30 * 1024 * 1024);
+        pre_init_ftm(dir.path(), 1, 30 * 1024 * 1024, None, None);
 
         std::fs::write(dir.path().join("clean_orphan.yaml"), "v1").unwrap();
 
@@ -2084,6 +2064,36 @@ mod clean_tests {
         assert!(out.status.success());
         let content = std::fs::read_to_string(dir.path().join("clean_orphan.yaml")).unwrap();
         assert_eq!(content, "v2", "Restore should yield current version");
+
+        stop_server(&mut server);
+    }
+
+    #[test]
+    fn test_periodic_clean_removes_orphans_after_interval() {
+        let dir = setup_test_dir();
+        pre_init_ftm(dir.path(), 1, 30 * 1024 * 1024, None, Some(2));
+
+        std::fs::write(dir.path().join("periodic_clean.yaml"), "v1").unwrap();
+
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        std::fs::write(dir.path().join("periodic_clean.yaml"), "v2").unwrap();
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+
+        let snap_before = count_snapshot_files(dir.path());
+        assert_eq!(snap_before, 2, "Two snapshots before periodic clean (v1 orphan + v2)");
+
+        std::thread::sleep(std::time::Duration::from_secs(4));
+
+        let snap_after = count_snapshot_files(dir.path());
+        assert_eq!(
+            snap_after, 1,
+            "Periodic clean should remove orphan; expected 1 snapshot, got {}",
+            snap_after
+        );
 
         stop_server(&mut server);
     }
@@ -2369,7 +2379,7 @@ mod config_hot_reload_tests {
         .unwrap();
 
         // Pre-init with 8s interval; no scan in 1s
-        pre_init_ftm_with_scan(dir.path(), 100, 30 * 1024 * 1024, 8);
+        pre_init_ftm(dir.path(), 100, 30 * 1024 * 1024, Some(8), None);
 
         let (mut server, port) = start_server_and_checkout(dir.path());
 
@@ -2402,7 +2412,7 @@ mod config_hot_reload_tests {
         std::fs::write(dir.path().join("medium.txt"), "x".repeat(200)).unwrap();
 
         // Pre-init with max_file_size=100 — file will be skipped
-        pre_init_ftm(dir.path(), 100, 100);
+        pre_init_ftm(dir.path(), 100, 100, None, None);
 
         let (mut server, port) = start_server_and_checkout(dir.path());
 
@@ -2622,7 +2632,7 @@ mod periodic_scan_tests {
         .unwrap();
 
         // Pre-init with 2s scan interval (minimum)
-        pre_init_ftm_with_scan(dir.path(), 100, 30 * 1024 * 1024, 2);
+        pre_init_ftm(dir.path(), 100, 30 * 1024 * 1024, Some(2), None);
 
         let (mut server, _port) = start_server_and_checkout(dir.path());
 
@@ -2656,7 +2666,7 @@ mod periodic_scan_tests {
         std::fs::write(dir.path().join("should_not_scan.txt"), "no scan").unwrap();
 
         // Pre-init with 5s interval so no scan runs within 2s
-        pre_init_ftm_with_scan(dir.path(), 100, 30 * 1024 * 1024, 5);
+        pre_init_ftm(dir.path(), 100, 30 * 1024 * 1024, Some(5), None);
 
         let (mut server, _port) = start_server_and_checkout(dir.path());
 

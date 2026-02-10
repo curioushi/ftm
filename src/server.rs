@@ -351,6 +351,58 @@ async fn checkout(
         info!("Periodic scanner started");
     }
 
+    // Spawn periodic cleaner — runs clean_orphan_snapshots every clean_interval seconds.
+    {
+        let clean_ftm_dir = ftm_dir.clone();
+        let clean_config = shared_config.clone();
+        tokio::spawn(async move {
+            let mut last_clean = tokio::time::Instant::now();
+            loop {
+                let (clean_interval, max_history) = {
+                    let cfg = clean_config.read().unwrap();
+                    (cfg.settings.clean_interval, cfg.settings.max_history)
+                };
+
+                let elapsed = last_clean.elapsed().as_secs();
+                if elapsed < clean_interval {
+                    let remaining = clean_interval - elapsed;
+                    let sleep_secs = std::cmp::min(1, remaining);
+                    tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+                    continue;
+                }
+
+                if !clean_ftm_dir.exists() {
+                    break;
+                }
+
+                last_clean = tokio::time::Instant::now();
+                let fd = clean_ftm_dir.clone();
+                match tokio::task::spawn_blocking(move || {
+                    let storage = Storage::new(fd, max_history);
+                    storage.clean_orphan_snapshots()
+                })
+                .await
+                {
+                    Ok(Ok(r)) => {
+                        if r.files_removed > 0 || r.bytes_removed > 0 {
+                            info!(
+                                "Periodic clean: {} files, {} bytes removed",
+                                r.files_removed, r.bytes_removed
+                            );
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        warn!("Periodic clean error: {}", e);
+                    }
+                    Err(e) => {
+                        warn!("Periodic clean task panic: {}", e);
+                    }
+                }
+            }
+        });
+        info!("Periodic cleaner started");
+    }
+
     // Store context
     {
         let mut guard = state.ctx.write().await;
