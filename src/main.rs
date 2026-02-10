@@ -113,6 +113,7 @@ fn main() -> Result<()> {
                         if PathBuf::from(watch_dir) == abs_dir {
                             kill_all_servers(health.pid);
                             println!("Already watching: {}", abs_dir.display());
+                            println!("Web UI: http://127.0.0.1:{}", cli.port);
                             return Ok(());
                         }
                     }
@@ -123,7 +124,9 @@ fn main() -> Result<()> {
             kill_all_servers(None);
             auto_start_server(cli.port, &abs_dir)?;
 
-            client::client_checkout(cli.port, &abs_dir.to_string_lossy())
+            client::client_checkout(cli.port, &abs_dir.to_string_lossy())?;
+            println!("Web UI: http://127.0.0.1:{}", cli.port);
+            Ok(())
         }
         Commands::Version => client::client_version(cli.port),
         Commands::Ls { include_deleted } => client::client_ls(cli.port, include_deleted),
