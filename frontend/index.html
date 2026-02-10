@@ -33,13 +33,18 @@
       <div id="main">
         <aside id="sidebar">
           <div id="sidebar-header">
-            <input
-              id="filter"
-              type="text"
-              placeholder="filter files..."
-              autocomplete="off"
-              spellcheck="false"
-            />
+            <div class="filter-wrap">
+              <input
+                id="filter"
+                type="text"
+                placeholder="filter files..."
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button type="button" class="filter-clear" aria-label="Clear filter" title="Clear">
+                ×
+              </button>
+            </div>
             <div
               id="tree-depth-track"
               class="tree-depth-track"

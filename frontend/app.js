@@ -698,6 +698,8 @@
       spacer.className = 'tl-lane-spacer';
       spacer.style.height = RULER_HEIGHT + 'px';
       spacer.style.flexShrink = '0';
+      const wrap = document.createElement('div');
+      wrap.className = 'filter-wrap';
       const input = document.createElement('input');
       input.type = 'text';
       input.className = 'tl-lane-filter-input';
@@ -713,7 +715,22 @@
           requestTimelineDraw();
         }, 80);
       });
-      spacer.appendChild(input);
+      const clearBtn = document.createElement('button');
+      clearBtn.type = 'button';
+      clearBtn.className = 'filter-clear';
+      clearBtn.setAttribute('aria-label', 'Clear filter');
+      clearBtn.title = 'Clear';
+      clearBtn.textContent = '\u00D7';
+      clearBtn.addEventListener('click', () => {
+        input.value = '';
+        tlLaneFilterQuery = '';
+        updateLaneLabels();
+        requestTimelineDraw();
+        input.focus();
+      });
+      wrap.appendChild(input);
+      wrap.appendChild(clearBtn);
+      spacer.appendChild(wrap);
       $timelineLanes.appendChild(spacer);
     } else {
       const input = spacer.querySelector('.tl-lane-filter-input');
@@ -1975,6 +1992,15 @@
     clearTimeout(filterTimeout);
     filterTimeout = setTimeout(renderFileList, 80);
   });
+  const $filterClear = document.querySelector('#sidebar-header .filter-clear');
+  if ($filterClear) {
+    $filterClear.addEventListener('click', () => {
+      $filter.value = '';
+      clearTimeout(filterTimeout);
+      renderFileList();
+      $filter.focus();
+    });
+  }
 
   // ---- Hide deleted files --------------------------------------------------
   async function refreshTimelineView() {
