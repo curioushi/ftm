@@ -257,12 +257,33 @@ fn auto_start_server(port: u16, watch_dir: &std::path::Path) -> Result<()> {
     }
 }
 
+/// Remove old log files in `log_dir`, keeping only the most recent `keep` files.
+/// Log filenames are YYYYMMDD-HHMMSS.mmm.log, so sorting by name descending gives newest first.
+fn prune_old_logs(log_dir: &std::path::Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(log_dir) else { return };
+    let mut names: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map_or(false, |ext| ext == "log"))
+        .collect();
+    if names.len() <= keep {
+        return;
+    }
+    names.sort_by(|a, b| b.cmp(a));
+    for path in names.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
 /// Initialize file-based logging to a directory.
 fn init_file_logging(log_dir: &std::path::Path) -> Result<()> {
     use chrono::Local;
     use std::sync::Mutex;
 
+    const KEEP_LOGS: usize = 100;
+
     std::fs::create_dir_all(log_dir)?;
+    prune_old_logs(log_dir, KEEP_LOGS);
     let now = Local::now();
     let log_filename = format!(
         "{}.{:03}.log",

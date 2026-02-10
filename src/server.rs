@@ -426,6 +426,44 @@ async fn checkout(
         info!("Periodic scanner started");
     }
 
+    // One-time scan 30s after checkout (only runs once)
+    {
+        let once_scan_watch_dir = directory.clone();
+        let once_scan_config = shared_config.clone();
+        let once_scan_ftm_dir = ftm_dir.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            if !once_scan_ftm_dir.exists() {
+                return;
+            }
+            let (cfg_snapshot, max_history) = {
+                let cfg = once_scan_config.read().unwrap();
+                (cfg.clone(), cfg.settings.max_history)
+            };
+            let wd = once_scan_watch_dir.clone();
+            let fd = once_scan_ftm_dir.clone();
+            match tokio::task::spawn_blocking(move || {
+                let storage = Storage::new(fd, max_history);
+                Scanner::new(wd, cfg_snapshot, storage).scan()
+            })
+            .await
+            {
+                Ok(Ok(r)) => {
+                    info!(
+                        "Post-checkout scan (30s): {} created, {} modified, {} deleted, {} unchanged",
+                        r.created, r.modified, r.deleted, r.unchanged
+                    );
+                }
+                Ok(Err(e)) => {
+                    warn!("Post-checkout scan error: {}", e);
+                }
+                Err(e) => {
+                    warn!("Post-checkout scan task panic: {}", e);
+                }
+            }
+        });
+    }
+
     // Spawn periodic cleaner — runs clean_orphan_snapshots every clean_interval seconds.
     {
         let clean_ftm_dir = ftm_dir.clone();

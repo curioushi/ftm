@@ -2589,6 +2589,58 @@ mod logs_tests {
 
         stop_server(&mut server);
     }
+
+    /// Pruning: when server starts with file logging, only the 100 most recent log files are kept.
+    #[test]
+    fn test_logs_prune_keeps_only_100() {
+        const KEEP: usize = 100;
+        let total_before = 105;
+
+        let dir = setup_test_dir();
+        let log_dir = dir.path().join(".ftm/logs");
+        std::fs::create_dir_all(&log_dir).unwrap();
+
+        for i in 0..total_before {
+            let name = format!("20000101-000000.{:03}.log", i);
+            std::fs::write(log_dir.join(&name), format!("log content {}\n", i)).unwrap();
+        }
+        let count_before: usize = std::fs::read_dir(&log_dir)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .ok()
+                    .and_then(|e| e.path().extension().map(|ext| ext == "log"))
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(count_before, total_before, "should have 105 log files before checkout");
+
+        let (mut server, _port) = start_server_and_checkout(dir.path());
+        stop_server(&mut server);
+
+        let entries: Vec<_> = std::fs::read_dir(&log_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "log"))
+            .collect();
+        assert_eq!(
+            entries.len(),
+            KEEP + 1,
+            "after prune: 100 kept + 1 new server log = 101 total"
+        );
+        let names: Vec<String> = entries
+            .iter()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n == "20000101-000000.000.log"),
+            "oldest file should be pruned"
+        );
+        assert!(
+            names.iter().any(|n| n == "20000101-000000.005.log"),
+            "file just after prune cutoff should still exist"
+        );
+    }
 }
 
 // ===========================================================================
