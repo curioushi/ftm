@@ -25,6 +25,8 @@
   const TL_HEIGHT_STORAGE_KEY = 'ftm-timeline-height';
   const TL_LANES_WIDTH_STORAGE_KEY = 'ftm-tl-lanes-width';
   const TREE_DEPTH_STORAGE_KEY = 'ftm-tree-depth';
+  const WORK_MODE_STORAGE_KEY = 'ftm-work-mode';
+  const WORK_MODE_TIME_RANGE_KEY = 'ftm-work-mode-time-range';
 
   // Timeline state
   let tlViewStart = 0; // ms timestamp (left edge of visible range)
@@ -1465,10 +1467,29 @@
   }
 
   // ---- Range buttons --------------------------------------------------------
+  function saveWorkModeFile() {
+    try {
+      localStorage.setItem(WORK_MODE_STORAGE_KEY, 'file');
+      localStorage.removeItem(WORK_MODE_TIME_RANGE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function saveWorkModeTime(range) {
+    try {
+      localStorage.setItem(WORK_MODE_STORAGE_KEY, 'time');
+      localStorage.setItem(WORK_MODE_TIME_RANGE_KEY, String(range));
+    } catch {
+      /* ignore */
+    }
+  }
+
   function clearActiveRangeBtn() {
     if (tlActiveRangeBtn) {
       tlActiveRangeBtn.classList.remove('active');
       tlActiveRangeBtn = null;
+      saveWorkModeFile();
     }
   }
 
@@ -1477,6 +1498,21 @@
     buttons.forEach((btn) => {
       btn.addEventListener('click', () => onRangeButtonClick(btn));
     });
+  }
+
+  /** Restore work mode: if mode is 'time', apply range. Pass savedMode/savedRange when restoring after init so file restore cannot overwrite them. */
+  async function restoreWorkMode(savedMode, savedRange) {
+    try {
+      const mode = savedMode != null ? savedMode : localStorage.getItem(WORK_MODE_STORAGE_KEY);
+      const range =
+        savedRange != null ? savedRange : localStorage.getItem(WORK_MODE_TIME_RANGE_KEY);
+      if (mode !== 'time' || !range) return;
+      const btn = document.querySelector('.tl-range-btn[data-range="' + range + '"]');
+      if (!btn) return;
+      await onRangeButtonClick(btn);
+    } catch {
+      /* ignore */
+    }
   }
 
   async function onRangeButtonClick(btn) {
@@ -1499,6 +1535,7 @@
     clearActiveRangeBtn();
     btn.classList.add('active');
     tlActiveRangeBtn = btn;
+    saveWorkModeTime(range);
 
     const now = Date.now();
     let since;
@@ -2455,6 +2492,8 @@
       if (health.watch_dir) {
         $status.textContent = health.watch_dir;
         await loadFiles();
+        const savedWorkMode = localStorage.getItem(WORK_MODE_STORAGE_KEY);
+        const savedTimeRange = localStorage.getItem(WORK_MODE_TIME_RANGE_KEY);
         const storedPaths = restoreSelectedFiles().filter((p) => treeHasFile(fileTree, p, ''));
         if (storedPaths.length > 1) {
           storedPaths.forEach((p) => expandDirsForPath(p));
@@ -2468,6 +2507,7 @@
         } else {
           requestTimelineDraw();
         }
+        await restoreWorkMode(savedWorkMode, savedTimeRange);
       } else {
         $status.textContent = t('status.noCheckout');
         $diffViewer.innerHTML = '<div class="empty-state">' + t('status.checkoutHint') + '</div>';
