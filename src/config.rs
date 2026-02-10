@@ -15,18 +15,12 @@ pub struct Settings {
     /// Global history queue size (max total entries across all files).
     pub max_history: usize,
     pub max_file_size: u64,
-    #[serde(default = "default_web_port")]
-    pub web_port: u16,
     /// Interval in seconds between periodic full scans. Minimum 2.
     #[serde(default = "default_scan_interval")]
     pub scan_interval: u64,
     /// Interval in seconds between periodic clean (orphan snapshot removal). Minimum 2.
     #[serde(default = "default_clean_interval")]
     pub clean_interval: u64,
-}
-
-fn default_web_port() -> u16 {
-    13580
 }
 
 fn default_scan_interval() -> u64 {
@@ -82,7 +76,6 @@ impl Default for Config {
             settings: Settings {
                 max_history: 10_000,
                 max_file_size: 30 * 1024 * 1024, // 30MB
-                web_port: 13580,
                 scan_interval: 300,
                 clean_interval: 3600,
             },
@@ -165,15 +158,14 @@ impl Config {
         match key {
             "settings.max_history" => Ok(self.settings.max_history.to_string()),
             "settings.max_file_size" => Ok(self.settings.max_file_size.to_string()),
-            "settings.web_port" => Ok(self.settings.web_port.to_string()),
             "settings.scan_interval" => Ok(self.settings.scan_interval.to_string()),
             "settings.clean_interval" => Ok(self.settings.clean_interval.to_string()),
             "watch.patterns" => Ok(self.watch.patterns.join(",")),
             "watch.exclude" => Ok(self.watch.exclude.join(",")),
             _ => anyhow::bail!(
                 "Unknown config key '{}'. Valid keys: settings.max_history, \
-                 settings.max_file_size, settings.web_port, settings.scan_interval, \
-                 settings.clean_interval, watch.patterns, watch.exclude",
+                 settings.max_file_size, settings.scan_interval, settings.clean_interval, \
+                 watch.patterns, watch.exclude",
                 key
             ),
         }
@@ -191,11 +183,6 @@ impl Config {
                 self.settings.max_file_size = value
                     .parse()
                     .map_err(|_| anyhow::anyhow!("Invalid value for max_file_size: {}", value))?;
-            }
-            "settings.web_port" => {
-                self.settings.web_port = value
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("Invalid value for web_port: {}", value))?;
             }
             "settings.scan_interval" => {
                 let v: u64 = value
@@ -224,8 +211,8 @@ impl Config {
             }
             _ => anyhow::bail!(
                 "Unknown config key '{}'. Valid keys: settings.max_history, \
-                 settings.max_file_size, settings.web_port, settings.scan_interval, \
-                 settings.clean_interval, watch.patterns, watch.exclude",
+                 settings.max_file_size, settings.scan_interval, settings.clean_interval, \
+                 watch.patterns, watch.exclude",
                 key
             ),
         }

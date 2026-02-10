@@ -189,7 +189,6 @@ settings:
   max_file_size: 31457280  # Max file size to track (30 MB)
   scan_interval: 300       # Seconds between periodic scans
   clean_interval: 3600     # Seconds between orphan snapshot clean
-  web_port: 13580          # Web UI port
 ```
 
 ### Configuration Keys
@@ -202,7 +201,6 @@ settings:
 | `settings.max_file_size` | int | Maximum file size in bytes |
 | `settings.scan_interval` | int | Seconds between full scans |
 | `settings.clean_interval` | int | Seconds between orphan snapshot clean |
-| `settings.web_port` | int | HTTP port for the Web UI |
 
 ---
 

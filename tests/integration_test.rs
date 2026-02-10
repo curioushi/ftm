@@ -224,7 +224,7 @@ fn pre_init_ftm(
     let ftm_dir = dir.join(".ftm");
     std::fs::create_dir_all(&ftm_dir).unwrap();
     let mut settings = format!(
-        "  max_history: {}\n  max_file_size: {}\n  web_port: 13580",
+        "  max_history: {}\n  max_file_size: {}",
         max_history, max_file_size
     );
     if let Some(s) = scan_interval {
@@ -2449,19 +2449,6 @@ mod config_hot_reload_tests {
             index.history.iter().any(|e| e.file == "medium.txt"),
             "medium.txt should be tracked after raising max_file_size"
         );
-
-        stop_server(&mut server);
-    }
-
-    /// `config set settings.web_port` should include a restart hint in the response.
-    #[test]
-    fn test_config_set_web_port_shows_restart_hint() {
-        let dir = setup_test_dir();
-        let (mut server, port) = start_server_and_checkout(dir.path());
-
-        let out = run_ftm_with_port(port, &["config", "set", "settings.web_port", "9999"]);
-        assert!(out.status.success());
-        assert!(String::from_utf8_lossy(&out.stdout).contains("restart"));
 
         stop_server(&mut server);
     }

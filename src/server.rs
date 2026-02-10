@@ -751,14 +751,8 @@ async fn config_set(
     cfg.save(&config_path)
         .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let hint = if req.key == "settings.web_port" {
-        " (web_port change requires server restart to take effect)"
-    } else {
-        ""
-    };
-
     Ok(Json(MessageResponse {
-        message: format!("Set {} = {}{}", req.key, req.value, hint),
+        message: format!("Set {} = {}", req.key, req.value),
     }))
 }
 
