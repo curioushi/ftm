@@ -133,6 +133,119 @@ input[type='text']:focus {
   color: var(--fg-dim);
 }
 
+#btn-help.btn-help {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* -- Help overlay & modal -- */
+.help-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 50%);
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.15s,
+    visibility 0.15s;
+}
+
+.help-overlay.help-open {
+  opacity: 1;
+  visibility: visible;
+}
+
+.help-overlay[aria-hidden='true'] {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.help-overlay[aria-hidden='false'] {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.help-modal {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  padding: 20px 24px;
+  max-width: 480px;
+  max-height: 80vh;
+  overflow: auto;
+  box-shadow: 0 8px 32px rgb(0 0 0 / 40%);
+}
+
+.help-modal h2 {
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: var(--fg-bright);
+}
+
+.help-modal .help-intro {
+  margin-bottom: 16px;
+  color: var(--fg);
+  line-height: 1.5;
+}
+
+.help-modal .help-section {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg-dim);
+  margin-bottom: 8px;
+}
+
+.help-modal .help-shortcuts {
+  margin-bottom: 16px;
+}
+
+.help-modal .help-shortcuts dt {
+  font-weight: 600;
+  color: var(--fg);
+  margin-top: 10px;
+  margin-bottom: 4px;
+}
+
+.help-modal .help-shortcuts dt:first-child {
+  margin-top: 0;
+}
+
+.help-modal .help-shortcuts dd {
+  margin-left: 0;
+  margin-bottom: 4px;
+  color: var(--fg-dim);
+}
+
+.help-modal .help-shortcuts kbd {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 5px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+
+.help-modal .help-close-hint {
+  font-size: 11px;
+  color: var(--fg-dim);
+  margin-bottom: 0;
+}
+
 /* -- Main (sidebar + content) -- */
 #main {
   display: flex;
@@ -658,6 +771,19 @@ body.tl-resizing * {
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
   z-index: 1;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  box-sizing: border-box;
+}
+
+.tl-lane-spacer .tl-lane-filter-input {
+  flex: 1;
+  min-width: 0;
+  height: 18px;
+  padding: 2px 6px;
+  font-size: 11px;
+  border-radius: 2px;
 }
 
 .tl-lane-label {

@@ -11,6 +11,15 @@
       <header id="toolbar">
         <div class="toolbar-left">
           <span class="logo">FTM - File Time Machine</span>
+          <button
+            type="button"
+            id="btn-help"
+            class="btn-help"
+            title="Help / Shortcuts"
+            aria-label="Help"
+          >
+            ?
+          </button>
         </div>
         <div class="toolbar-right">
           <label class="toolbar-checkbox"
@@ -27,7 +36,7 @@
             <input
               id="filter"
               type="text"
-              placeholder="Filter files..."
+              placeholder="filter files..."
               autocomplete="off"
               spellcheck="false"
             />
@@ -69,13 +78,13 @@
       <footer id="timeline-bar">
         <div id="timeline-toolbar">
           <div id="timeline-range-buttons">
+            <button class="tl-range-btn" data-range="all">All</button>
             <button class="tl-range-btn" data-range="3600000">1h</button>
             <button class="tl-range-btn" data-range="21600000">6h</button>
             <button class="tl-range-btn" data-range="86400000">1d</button>
             <button class="tl-range-btn" data-range="259200000">3d</button>
             <button class="tl-range-btn" data-range="604800000">7d</button>
             <button class="tl-range-btn" data-range="2592000000">30d</button>
-            <button class="tl-range-btn" data-range="all">All</button>
           </div>
           <div id="timeline-label"></div>
         </div>
@@ -86,6 +95,39 @@
         </div>
       </footer>
       <div id="timeline-tooltip"></div>
+
+      <div id="help-overlay" class="help-overlay" aria-hidden="true">
+        <div
+          id="help-modal"
+          class="help-modal"
+          role="dialog"
+          aria-labelledby="help-title"
+          aria-modal="true"
+        >
+          <h2 id="help-title">Help</h2>
+          <p class="help-intro">
+            FTM tracks file changes over time in your project. It lets you browse any file’s
+            history, see what changed between versions, and restore a previous version when you need
+            to undo or recover.
+          </p>
+          <h3 class="help-section">Shortcuts</h3>
+          <dl class="help-shortcuts">
+            <dt>File list</dt>
+            <dd><kbd>Ctrl</kbd>/<kbd>Cmd</kbd> + click — multi-select files</dd>
+            <dd><kbd>↑</kbd> / <kbd>↓</kbd> — change selected file</dd>
+            <dd><kbd>1</kbd>–<kbd>7</kbd> — time range (All, 1h, 6h, 1d, 3d, 7d, 30d)</dd>
+            <dt>Timeline (mouse over)</dt>
+            <dd><kbd>A</kbd> / <kbd>D</kbd> — pan left / right</dd>
+            <dd><kbd>W</kbd> / <kbd>S</kbd> — zoom in / out</dd>
+            <dd><kbd>←</kbd> / <kbd>→</kbd> — previous / next version</dd>
+            <dd><kbd>↑</kbd> / <kbd>↓</kbd> — switch lane (multi-file)</dd>
+            <dt>Timeline wheel</dt>
+            <dd><kbd>Shift</kbd> + wheel — horizontal pan</dd>
+            <dd><kbd>Ctrl</kbd>/<kbd>Cmd</kbd> + wheel — zoom at mouse</dd>
+          </dl>
+          <p class="help-close-hint">Press <kbd>Esc</kbd> or click outside to close.</p>
+        </div>
+      </div>
     </div>
 
     <script src="app.js"></script>

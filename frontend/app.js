@@ -36,6 +36,7 @@
   let tlActiveNode = null; // {laneIdx, entryIdx, entry} - currently selected node
   let tlRafId = null;
   let tlActiveRangeBtn = null; // currently active range button element
+  let tlLaneFilterQuery = ''; // filter for timeline lanes (file path/name)
 
   // Canvas drawing constants
   const LANE_HEIGHT = 24;
@@ -94,6 +95,9 @@
   const $tlResizeHandle = document.getElementById('timeline-resize-handle');
   const $tlLanesResize = document.getElementById('timeline-lanes-resize');
   const ctx = $canvas.getContext('2d');
+  const $btnHelp = document.getElementById('btn-help');
+  const $helpOverlay = document.getElementById('help-overlay');
+  const $helpTitle = document.getElementById('help-title');
 
   // ---- API helpers ---------------------------------------------------------
   const API = '';
@@ -674,17 +678,55 @@
     $timelineLabel.textContent = formatDateTime(s) + ' \u2014 ' + formatDateTime(e);
   }
 
-  function updateLaneLabels() {
-    $timelineLanes.innerHTML = '';
-
-    // Add a spacer matching the ruler height so labels align with canvas lanes
-    const spacer = document.createElement('div');
-    spacer.className = 'tl-lane-spacer';
-    spacer.style.height = RULER_HEIGHT + 'px';
-    spacer.style.flexShrink = '0';
-    $timelineLanes.appendChild(spacer);
-
+  /** Return indices into tlLanes that match tlLaneFilterQuery (empty = all). */
+  function getVisibleLaneIndices() {
+    const matcher = createFilterMatcher(tlLaneFilterQuery);
+    if (!matcher) {
+      return tlLanes.map((_, i) => i);
+    }
+    const out = [];
     for (let i = 0; i < tlLanes.length; i++) {
+      if (matcher(tlLanes[i].file)) out.push(i);
+    }
+    return out;
+  }
+
+  function updateLaneLabels() {
+    let spacer = $timelineLanes.querySelector('.tl-lane-spacer');
+    if (!spacer) {
+      spacer = document.createElement('div');
+      spacer.className = 'tl-lane-spacer';
+      spacer.style.height = RULER_HEIGHT + 'px';
+      spacer.style.flexShrink = '0';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'tl-lane-filter-input';
+      input.placeholder = 'filter files...';
+      input.value = tlLaneFilterQuery;
+      input.setAttribute('aria-label', 'Filter timeline lanes');
+      let laneFilterTimeout = null;
+      input.addEventListener('input', () => {
+        tlLaneFilterQuery = input.value;
+        clearTimeout(laneFilterTimeout);
+        laneFilterTimeout = setTimeout(() => {
+          updateLaneLabels();
+          requestTimelineDraw();
+        }, 80);
+      });
+      spacer.appendChild(input);
+      $timelineLanes.appendChild(spacer);
+    } else {
+      const input = spacer.querySelector('.tl-lane-filter-input');
+      if (input && input.value !== tlLaneFilterQuery) input.value = tlLaneFilterQuery;
+    }
+
+    while ($timelineLanes.lastChild !== spacer) {
+      $timelineLanes.removeChild($timelineLanes.lastChild);
+    }
+
+    const visibleIndices = getVisibleLaneIndices();
+    for (let vi = 0; vi < visibleIndices.length; vi++) {
+      const i = visibleIndices[vi];
       const lane = tlLanes[i];
       const label = document.createElement('div');
       label.className = 'tl-lane-label' + (currentFile === lane.file ? ' active' : '');
@@ -879,21 +921,23 @@
 
     const lanesAreaTop = RULER_HEIGHT;
     const lanesAreaHeight = h - RULER_HEIGHT;
+    const visibleIndices = getVisibleLaneIndices();
 
     // Clip to lanes area
     ctx.beginPath();
     ctx.rect(0, lanesAreaTop, w, lanesAreaHeight);
     ctx.clip();
 
-    for (let li = 0; li < tlLanes.length; li++) {
+    for (let vi = 0; vi < visibleIndices.length; vi++) {
+      const li = visibleIndices[vi];
       const lane = tlLanes[li];
-      const laneY = lanesAreaTop + li * LANE_HEIGHT - tlScrollY;
+      const laneY = lanesAreaTop + vi * LANE_HEIGHT - tlScrollY;
 
       // Skip if not visible
       if (laneY + LANE_HEIGHT < lanesAreaTop || laneY > h) continue;
 
       // Lane background - subtle alternating
-      if (li % 2 === 1) {
+      if (vi % 2 === 1) {
         ctx.fillStyle = 'rgba(255,255,255,0.02)';
         ctx.fillRect(0, laneY, w, LANE_HEIGHT);
       }
@@ -951,30 +995,35 @@
     // Draw the active node on top so it is never covered by others
     if (tlActiveNode) {
       const li = tlActiveNode.laneIdx;
-      const laneY = lanesAreaTop + li * LANE_HEIGHT - tlScrollY;
-      if (laneY + LANE_HEIGHT >= lanesAreaTop && laneY <= h) {
-        const centerY = laneY + LANE_HEIGHT / 2;
-        const entry = tlActiveNode.entry;
-        const ts = new Date(entry.timestamp).getTime();
-        const x = timeToX(ts, w);
-        if (x >= -NODE_RADIUS * 2 && x <= w + NODE_RADIUS * 2) {
-          const color = opColor(entry.op);
-          const isHovered =
-            tlHoveredNode &&
-            tlHoveredNode.laneIdx === li &&
-            tlHoveredNode.entryIdx === tlActiveNode.entryIdx;
+      const vi = visibleIndices.indexOf(li);
+      if (vi === -1) {
+        // Active lane filtered out - skip drawing
+      } else {
+        const laneY = lanesAreaTop + vi * LANE_HEIGHT - tlScrollY;
+        if (laneY + LANE_HEIGHT >= lanesAreaTop && laneY <= h) {
+          const centerY = laneY + LANE_HEIGHT / 2;
+          const entry = tlActiveNode.entry;
+          const ts = new Date(entry.timestamp).getTime();
+          const x = timeToX(ts, w);
+          if (x >= -NODE_RADIUS * 2 && x <= w + NODE_RADIUS * 2) {
+            const color = opColor(entry.op);
+            const isHovered =
+              tlHoveredNode &&
+              tlHoveredNode.laneIdx === li &&
+              tlHoveredNode.entryIdx === tlActiveNode.entryIdx;
 
-          ctx.beginPath();
-          ctx.arc(x, centerY, isHovered ? NODE_RADIUS + 1.5 : NODE_RADIUS, 0, Math.PI * 2);
-          ctx.fillStyle = color;
-          ctx.fill();
-          ctx.strokeStyle = COLORS.fgBright;
-          ctx.lineWidth = 2;
-          ctx.stroke();
-          ctx.beginPath();
-          ctx.arc(x, centerY, 2, 0, Math.PI * 2);
-          ctx.fillStyle = COLORS.fgBright;
-          ctx.fill();
+            ctx.beginPath();
+            ctx.arc(x, centerY, isHovered ? NODE_RADIUS + 1.5 : NODE_RADIUS, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.strokeStyle = COLORS.fgBright;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(x, centerY, 2, 0, Math.PI * 2);
+            ctx.fillStyle = COLORS.fgBright;
+            ctx.fill();
+          }
         }
       }
     }
@@ -991,12 +1040,14 @@
   function hitTestNode(mx, my) {
     const w = parseFloat($canvas.style.width);
     const lanesAreaTop = RULER_HEIGHT;
+    const visibleIndices = getVisibleLaneIndices();
     let closest = null;
     let closestDist = NODE_HIT_RADIUS + 1;
 
-    for (let li = 0; li < tlLanes.length; li++) {
+    for (let vi = 0; vi < visibleIndices.length; vi++) {
+      const li = visibleIndices[vi];
       const lane = tlLanes[li];
-      const laneY = lanesAreaTop + li * LANE_HEIGHT - tlScrollY;
+      const laneY = lanesAreaTop + vi * LANE_HEIGHT - tlScrollY;
       const centerY = laneY + LANE_HEIGHT / 2;
 
       for (let ei = 0; ei < lane.entries.length; ei++) {
@@ -1055,10 +1106,8 @@
       }
 
       // Pan vertically
-      const maxScrollY = Math.max(
-        0,
-        tlLanes.length * LANE_HEIGHT - (parseFloat($canvas.style.height) - RULER_HEIGHT)
-      );
+      const lanesAreaHeight = parseFloat($canvas.style.height) - RULER_HEIGHT;
+      const maxScrollY = Math.max(0, tlLanes.length * LANE_HEIGHT - lanesAreaHeight);
       tlScrollY = Math.max(0, Math.min(maxScrollY, tlDragState.origScrollY - dy));
       $timelineLanes.scrollTop = tlScrollY;
 
@@ -1132,10 +1181,8 @@
       tlViewEnd = mouseTime + (1 - leftRatio) * newSpan;
     } else {
       // Default wheel: vertical scroll lanes
-      const maxScrollY = Math.max(
-        0,
-        tlLanes.length * LANE_HEIGHT - (parseFloat($canvas.style.height) - RULER_HEIGHT)
-      );
+      const lanesAreaHeight = parseFloat($canvas.style.height) - RULER_HEIGHT;
+      const maxScrollY = Math.max(0, tlLanes.length * LANE_HEIGHT - lanesAreaHeight);
       tlScrollY = Math.max(0, Math.min(maxScrollY, tlScrollY + e.deltaY));
       $timelineLanes.scrollTop = tlScrollY;
     }
@@ -1268,7 +1315,8 @@
     if (!toChecksum) {
       // Delete event - show message
       $diffViewer.innerHTML = '<div class="empty-state">File was deleted in this version</div>';
-      $diffMeta.textContent = opLabel(entry.op) + ' \u2022 ' + formatDateTime(new Date(entry.timestamp));
+      $diffMeta.textContent =
+        opLabel(entry.op) + ' \u2022 ' + formatDateTime(new Date(entry.timestamp));
       return;
     }
 
@@ -1283,7 +1331,8 @@
       break;
     }
 
-    $diffMeta.textContent = opLabel(entry.op) + ' \u2022 ' + formatDateTime(new Date(entry.timestamp));
+    $diffMeta.textContent =
+      opLabel(entry.op) + ' \u2022 ' + formatDateTime(new Date(entry.timestamp));
     if (entry.size != null) {
       $diffMeta.textContent += ' \u2022 ' + formatSize(entry.size);
     }
@@ -2176,11 +2225,13 @@
 
   /** Switch to an adjacent lane in multi-file timeline, selecting the closest node in time */
   function onTimelineLaneSwitch(direction) {
+    const visibleIndices = getVisibleLaneIndices();
+    if (visibleIndices.length === 0) return;
+
     let currentLaneIdx = -1;
     if (tlActiveNode) {
       currentLaneIdx = tlActiveNode.laneIdx;
     } else {
-      // Try to find lane by currentFile
       for (let i = 0; i < tlLanes.length; i++) {
         if (tlLanes[i].file === currentFile) {
           currentLaneIdx = i;
@@ -2189,16 +2240,16 @@
       }
     }
 
-    // Compute target lane index
-    let targetLaneIdx;
-    if (currentLaneIdx === -1) {
-      targetLaneIdx = direction > 0 ? 0 : tlLanes.length - 1;
+    const currentVi = currentLaneIdx === -1 ? -1 : visibleIndices.indexOf(currentLaneIdx);
+    let targetVi;
+    if (currentVi === -1) {
+      targetVi = direction > 0 ? 0 : visibleIndices.length - 1;
     } else {
-      targetLaneIdx = currentLaneIdx + direction;
+      targetVi = currentVi + direction;
     }
 
-    // Clamp
-    if (targetLaneIdx < 0 || targetLaneIdx >= tlLanes.length) return;
+    if (targetVi < 0 || targetVi >= visibleIndices.length) return;
+    const targetLaneIdx = visibleIndices[targetVi];
 
     const targetLane = tlLanes[targetLaneIdx];
     if (targetLane.entries.length === 0) return;
@@ -2284,6 +2335,31 @@
 
     document.addEventListener('keydown', onTimelineKeydown);
     document.addEventListener('keydown', onFileListKeydown);
+
+    // Help modal
+    function isHelpOpen() {
+      return $helpOverlay.getAttribute('aria-hidden') === 'false';
+    }
+    function openHelp() {
+      $helpOverlay.setAttribute('aria-hidden', 'false');
+      $helpOverlay.classList.add('help-open');
+      if ($helpTitle) $helpTitle.focus();
+    }
+    function closeHelp() {
+      $helpOverlay.setAttribute('aria-hidden', 'true');
+      $helpOverlay.classList.remove('help-open');
+      if ($btnHelp) $btnHelp.focus();
+    }
+    $btnHelp.addEventListener('click', () => openHelp());
+    $helpOverlay.addEventListener('click', (e) => {
+      if (e.target === $helpOverlay) closeHelp();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && isHelpOpen()) {
+        e.preventDefault();
+        closeHelp();
+      }
+    });
   }
 
   init();
