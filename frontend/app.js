@@ -262,6 +262,7 @@
         // Arrow click: toggle expand/collapse
         arrow.addEventListener('click', (e) => {
           e.stopPropagation();
+          clearTimelineLaneFilter();
           if (collapsedDirs.has(fullPath)) {
             collapsedDirs.delete(fullPath);
           } else {
@@ -273,6 +274,7 @@
         // Dir name click: select all files under this directory
         nameSpan.addEventListener('click', (e) => {
           e.stopPropagation();
+          clearTimelineLaneFilter();
           // Ensure expanded so user can see selected files
           collapsedDirs.delete(fullPath);
           const childFiles = collectFilesUnder(node.children, fullPath);
@@ -314,6 +316,7 @@
         fileRow.appendChild(nameSpan);
         fileRow.appendChild(countSpan);
         fileRow.addEventListener('click', (e) => {
+          clearTimelineLaneFilter();
           if (e.ctrlKey || e.metaKey) {
             // Ctrl/Cmd+click: toggle file in multi-selection
             if (selectedFiles.has(fullPath)) {
@@ -805,6 +808,12 @@
     }
     // Sync scroll
     $timelineLanes.scrollTop = tlScrollY;
+  }
+
+  function clearTimelineLaneFilter() {
+    tlLaneFilterQuery = '';
+    updateLaneLabels();
+    requestTimelineDraw();
   }
 
   // ---- Canvas drawing -------------------------------------------------------
