@@ -105,15 +105,31 @@ impl Scanner {
                 }
             } else if path.is_file() && self.config.matches_path(&path, &self.root_dir) {
                 // Skip files exceeding max_file_size
-                if let Ok(meta) = std::fs::metadata(&path) {
-                    if meta.len() > self.config.settings.max_file_size {
-                        continue;
-                    }
-                }
+                let meta = match std::fs::metadata(&path) {
+                    Ok(m) if m.len() > self.config.settings.max_file_size => continue,
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
 
                 let rel_path = path.strip_prefix(&self.root_dir).unwrap_or(&path);
                 let file_key = path_util::normalize_rel_path(&rel_path.to_string_lossy());
-                scanned_files.insert(file_key);
+                scanned_files.insert(file_key.clone());
+
+                // Fast path: skip hashing if mtime and size unchanged
+                let mtime_nanos = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos() as i64);
+                if let Some(last) = view.last_entry_for_file(index, &file_key) {
+                    if last.op != Operation::Delete
+                        && last.size == Some(meta.len())
+                        && last.mtime_nanos == mtime_nanos
+                    {
+                        result.unchanged += 1;
+                        continue;
+                    }
+                }
 
                 match self
                     .storage
@@ -147,19 +163,8 @@ impl Scanner {
     fn is_excluded_dir(&self, path: &Path) -> bool {
         let rel_path = path.strip_prefix(&self.root_dir).unwrap_or(path);
         let path_str = path_util::normalize_rel_path(&rel_path.to_string_lossy());
-
-        // Append separator so patterns like "**/target/**" match directory paths
         let dir_str = format!("{}/", path_str);
-
-        for pattern in &self.config.watch.exclude {
-            if let Ok(p) = glob::Pattern::new(pattern) {
-                if p.matches(&dir_str) || p.matches(&path_str) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        self.config.excluded_by_patterns(&path_str, Some(&dir_str))
     }
 
     fn detect_deletes(

@@ -28,6 +28,9 @@ pub struct HistoryEntry {
     pub checksum: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
+    /// File mtime in nanoseconds since Unix epoch; used for fast skip (avoids same-second false skip).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtime_nanos: Option<i64>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

@@ -41,35 +41,44 @@ fn default_clean_interval() -> u64 {
 pub struct Config {
     pub watch: WatchConfig,
     pub settings: Settings,
+    /// Compiled exclude patterns; not serialized, built from watch.exclude.
+    #[serde(skip, default)]
+    pub exclude_compiled: Vec<Pattern>,
 }
 
 impl Default for Config {
     fn default() -> Self {
+        let watch = WatchConfig {
+            patterns: vec![
+                "*.rs".into(),
+                "*.py".into(),
+                "*.md".into(),
+                "*.txt".into(),
+                "*.json".into(),
+                "*.yml".into(),
+                "*.yaml".into(),
+                "*.toml".into(),
+                "*.js".into(),
+                "*.ts".into(),
+                "*.vision".into(),
+                "*.task".into(),
+                "*.conf".into(),
+                "*.ini".into(),
+            ],
+            exclude: vec![
+                "**/target/**".into(),
+                "**/node_modules/**".into(),
+                "**/.git/**".into(),
+                "**/.ftm/**".into(),
+            ],
+        };
+        let exclude_compiled = watch
+            .exclude
+            .iter()
+            .filter_map(|p| Pattern::new(p).ok())
+            .collect();
         Self {
-            watch: WatchConfig {
-                patterns: vec![
-                    "*.rs".into(),
-                    "*.py".into(),
-                    "*.md".into(),
-                    "*.txt".into(),
-                    "*.json".into(),
-                    "*.yml".into(),
-                    "*.yaml".into(),
-                    "*.toml".into(),
-                    "*.js".into(),
-                    "*.ts".into(),
-                    "*.vision".into(),
-                    "*.task".into(),
-                    "*.conf".into(),
-                    "*.ini".into(),
-                ],
-                exclude: vec![
-                    "**/target/**".into(),
-                    "**/node_modules/**".into(),
-                    "**/.git/**".into(),
-                    "**/.ftm/**".into(),
-                ],
-            },
+            watch,
             settings: Settings {
                 max_history: 10_000,
                 max_file_size: 30 * 1024 * 1024, // 30MB
@@ -77,6 +86,7 @@ impl Default for Config {
                 scan_interval: 300,
                 clean_interval: 3600,
             },
+            exclude_compiled,
         }
     }
 }
@@ -91,7 +101,17 @@ impl Config {
         if config.settings.clean_interval < 2 {
             config.settings.clean_interval = 2;
         }
+        config.build_exclude_compiled();
         Ok(config)
+    }
+
+    fn build_exclude_compiled(&mut self) {
+        self.exclude_compiled = self
+            .watch
+            .exclude
+            .iter()
+            .filter_map(|p| Pattern::new(p).ok())
+            .collect();
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -106,13 +126,8 @@ impl Config {
         let rel_path = path.strip_prefix(root_dir).unwrap_or(path);
         let path_str = path_util::normalize_rel_path(&rel_path.to_string_lossy());
 
-        // Check exclude patterns (glob expects forward slashes)
-        for pattern in &self.watch.exclude {
-            if let Ok(p) = Pattern::new(pattern) {
-                if p.matches(&path_str) {
-                    return false;
-                }
-            }
+        if self.excluded_by_patterns(&path_str, None) {
+            return false;
         }
 
         // Check include patterns
@@ -127,6 +142,21 @@ impl Config {
             }
         }
 
+        false
+    }
+
+    /// Returns true if path_str or (if provided) dir_str matches any compiled exclude pattern.
+    pub(crate) fn excluded_by_patterns(&self, path_str: &str, dir_str: Option<&str>) -> bool {
+        for p in &self.exclude_compiled {
+            if p.matches(path_str) {
+                return true;
+            }
+            if let Some(d) = dir_str {
+                if p.matches(d) {
+                    return true;
+                }
+            }
+        }
         false
     }
 
@@ -190,6 +220,7 @@ impl Config {
             }
             "watch.exclude" => {
                 self.watch.exclude = value.split(',').map(|s| s.trim().to_string()).collect();
+                self.build_exclude_compiled();
             }
             _ => anyhow::bail!(
                 "Unknown config key '{}'. Valid keys: settings.max_history, \

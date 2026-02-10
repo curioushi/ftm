@@ -30,7 +30,7 @@ impl IndexView {
         Self { last_by_file }
     }
 
-    fn last_entry_for_file<'a>(&self, index: &'a Index, file: &str) -> Option<&'a HistoryEntry> {
+    pub(crate) fn last_entry_for_file<'a>(&self, index: &'a Index, file: &str) -> Option<&'a HistoryEntry> {
         self.last_by_file
             .get(file)
             .and_then(|i| index.history.get(*i))
@@ -204,12 +204,19 @@ impl Storage {
             std::fs::remove_file(&tmp_path)?;
         }
 
+        let mtime_nanos = std::fs::metadata(file_path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos() as i64);
+
         let entry = HistoryEntry {
             timestamp: Utc::now(),
             op,
             file: file_key,
             checksum: Some(checksum),
             size: Some(size),
+            mtime_nanos,
         };
 
         index.history.push(entry.clone());
@@ -237,6 +244,7 @@ impl Storage {
             file: file_key,
             checksum: None,
             size: None,
+            mtime_nanos: None,
         };
 
         index.history.push(entry.clone());
@@ -312,6 +320,7 @@ impl Storage {
                 file: file_key,
                 checksum: None,
                 size: None,
+                mtime_nanos: None,
             };
             index.history.push(entry.clone());
             view.update_last_for_file(entry.file.clone(), index.history.len() - 1);
