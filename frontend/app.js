@@ -21,6 +21,7 @@
   let tlTooltipTimeoutId = null; // timeout for auto-hiding keyboard tooltip
   let isMouseOverTimeline = false; // track if mouse is over the timeline area
   const SELECTED_FILE_STORAGE_KEY = 'ftm-selected-file';
+  const SELECTED_FILES_STORAGE_KEY = 'ftm-selected-files';
   const TL_HEIGHT_STORAGE_KEY = 'ftm-timeline-height';
   const TL_LANES_WIDTH_STORAGE_KEY = 'ftm-tl-lanes-width';
   const TREE_DEPTH_STORAGE_KEY = 'ftm-tree-depth';
@@ -275,7 +276,7 @@
           if (childFiles.length === 0) return;
           selectedFiles = new Set(childFiles);
           currentFile = childFiles[0];
-          rememberSelectedFile(currentFile);
+          rememberSelectedFiles(childFiles);
           renderFileList();
           selectMultipleFiles(childFiles);
         });
@@ -549,6 +550,8 @@
   /** Select multiple files and show them in the multi-file timeline */
   async function selectMultipleFiles(files) {
     if (files.length === 0) return;
+    currentFile = files[0];
+    selectedFiles = new Set(files);
     clearActiveRangeBtn();
     $diffTitle.textContent = files.length + ' files selected';
     $diffMeta.textContent = '';
@@ -575,6 +578,7 @@
         tlViewEnd = Date.now();
         updateTimelineLabel();
         updateLaneLabels();
+        rememberSelectedFiles(files);
         requestTimelineDraw();
         return;
       }
@@ -590,6 +594,7 @@
       const span = Math.max(maxTs - minTs, MIN_VIEW_SPAN);
       const pad = span * 0.08;
       setTimelineMultiFile(allEntries, minTs - pad, maxTs + pad);
+      rememberSelectedFiles(files);
 
       // Also load history for the primary (currentFile) to enable diff
       if (currentFile) {
@@ -1216,7 +1221,7 @@
       // In multi-file mode, clicking a node switches to that file
       // but don't refetch - we set up single-file from existing data
       currentFile = lane.file;
-      rememberSelectedFile(lane.file);
+      rememberSelectedFiles(Array.from(selectedFiles));
       renderFileList();
       updateLaneLabels();
       $diffTitle.textContent = lane.file;
@@ -2108,13 +2113,44 @@
   function rememberSelectedFile(path) {
     if (!path) {
       localStorage.removeItem(SELECTED_FILE_STORAGE_KEY);
+      localStorage.removeItem(SELECTED_FILES_STORAGE_KEY);
       return;
     }
     localStorage.setItem(SELECTED_FILE_STORAGE_KEY, path);
+    localStorage.removeItem(SELECTED_FILES_STORAGE_KEY);
   }
 
-  function restoreSelectedFile() {
-    return localStorage.getItem(SELECTED_FILE_STORAGE_KEY);
+  /** Remember multiple selected files (multi-select / directory select). */
+  function rememberSelectedFiles(paths) {
+    if (!paths || paths.length === 0) {
+      localStorage.removeItem(SELECTED_FILE_STORAGE_KEY);
+      localStorage.removeItem(SELECTED_FILES_STORAGE_KEY);
+      return;
+    }
+    if (paths.length === 1) {
+      localStorage.setItem(SELECTED_FILE_STORAGE_KEY, paths[0]);
+      localStorage.removeItem(SELECTED_FILES_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(SELECTED_FILES_STORAGE_KEY, JSON.stringify(paths));
+    localStorage.setItem(SELECTED_FILE_STORAGE_KEY, paths[0]);
+  }
+
+  /** Return array of paths to restore: multi if stored as list, else single. */
+  function restoreSelectedFiles() {
+    const raw = localStorage.getItem(SELECTED_FILES_STORAGE_KEY);
+    if (raw) {
+      try {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr) && arr.length > 0) {
+          return arr.filter((p) => typeof p === 'string');
+        }
+      } catch {
+        // ignore JSON parse error
+      }
+    }
+    const single = localStorage.getItem(SELECTED_FILE_STORAGE_KEY);
+    return single ? [single] : [];
   }
 
   function treeHasFile(nodes, targetPath, prefix) {
@@ -2339,12 +2375,17 @@
       if (health.watch_dir) {
         $status.textContent = health.watch_dir;
         await loadFiles();
-        const storedFile = restoreSelectedFile();
-        if (storedFile && treeHasFile(fileTree, storedFile, '')) {
-          expandDirsForPath(storedFile);
-          await selectFile(storedFile);
+        const storedPaths = restoreSelectedFiles().filter((p) => treeHasFile(fileTree, p, ''));
+        if (storedPaths.length > 1) {
+          storedPaths.forEach((p) => expandDirsForPath(p));
+          currentFile = storedPaths[0];
+          selectedFiles = new Set(storedPaths);
+          renderFileList();
+          await selectMultipleFiles(storedPaths);
+        } else if (storedPaths.length === 1) {
+          expandDirsForPath(storedPaths[0]);
+          await selectFile(storedPaths[0]);
         } else {
-          // No stored file - show empty timeline
           requestTimelineDraw();
         }
       } else {
