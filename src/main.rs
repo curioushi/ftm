@@ -28,7 +28,7 @@ enum Commands {
     Version,
     /// Initialize .ftm in a directory and start watching
     Checkout {
-        /// Directory to watch (must be absolute path)
+        /// Directory to watch (absolute or relative path)
         directory: PathBuf,
     },
     /// List tracked files (excludes deleted by default; use --include-deleted to show all)
@@ -57,7 +57,7 @@ enum Commands {
     /// Start the FTM server (daemon mode, internal use only)
     #[command(hide = true)]
     Serve {
-        /// Custom log directory (default: .ftm/log/)
+        /// Custom log directory (default: .ftm/logs/)
         #[arg(long)]
         log_dir: Option<PathBuf>,
     },

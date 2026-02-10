@@ -74,7 +74,7 @@ FTM follows a client-server architecture. Running `ftm checkout` automatically s
 | Command | Description |
 |---------|-------------|
 | `ftm checkout <dir>` | Initialize `.ftm/` in a directory and begin watching |
-| `ftm ls` | List all tracked files |
+| `ftm ls` | List tracked files (use `--include-deleted` to include deleted) |
 | `ftm history <file>` | Show version history for a file |
 | `ftm restore <file> <checksum>` | Restore a file to a specific version |
 | `ftm scan` | Trigger a full manual scan |
@@ -109,7 +109,7 @@ ftm restore config/settings.yaml a3f8e2b1
 # Change max history versions per file
 ftm config set settings.max_history 200
 
-# Adjust scan interval (seconds, minimum 2)
+# Adjust scan interval (seconds)
 ftm config set settings.scan_interval 60
 ```
 
@@ -187,8 +187,9 @@ watch:
 settings:
   max_history: 10000       # Max total history entries (global queue)
   max_file_size: 31457280  # Max file size to track (30 MB)
-  scan_interval: 300       # Seconds between periodic scans (minimum 2)
-  web_port: 13580           # Web UI port
+  scan_interval: 300       # Seconds between periodic scans
+  clean_interval: 3600     # Seconds between orphan snapshot clean
+  web_port: 13580          # Web UI port
 ```
 
 ### Configuration Keys
@@ -199,7 +200,8 @@ settings:
 | `watch.exclude` | list | Glob patterns for files/dirs to ignore |
 | `settings.max_history` | int | Maximum total history entries (global queue size) |
 | `settings.max_file_size` | int | Maximum file size in bytes |
-| `settings.scan_interval` | int | Seconds between full scans (minimum 2) |
+| `settings.scan_interval` | int | Seconds between full scans |
+| `settings.clean_interval` | int | Seconds between orphan snapshot clean |
 | `settings.web_port` | int | HTTP port for the Web UI |
 
 ---
