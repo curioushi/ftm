@@ -262,7 +262,6 @@
         // Arrow click: toggle expand/collapse
         arrow.addEventListener('click', (e) => {
           e.stopPropagation();
-          clearTimelineLaneFilter();
           if (collapsedDirs.has(fullPath)) {
             collapsedDirs.delete(fullPath);
           } else {
@@ -274,7 +273,6 @@
         // Dir name click: select all files under this directory
         nameSpan.addEventListener('click', (e) => {
           e.stopPropagation();
-          clearTimelineLaneFilter();
           // Ensure expanded so user can see selected files
           collapsedDirs.delete(fullPath);
           const childFiles = collectFilesUnder(node.children, fullPath);
@@ -316,7 +314,6 @@
         fileRow.appendChild(nameSpan);
         fileRow.appendChild(countSpan);
         fileRow.addEventListener('click', (e) => {
-          clearTimelineLaneFilter();
           if (e.ctrlKey || e.metaKey) {
             // Ctrl/Cmd+click: toggle file in multi-selection
             if (selectedFiles.has(fullPath)) {
@@ -808,12 +805,6 @@
     }
     // Sync scroll
     $timelineLanes.scrollTop = tlScrollY;
-  }
-
-  function clearTimelineLaneFilter() {
-    tlLaneFilterQuery = '';
-    updateLaneLabels();
-    requestTimelineDraw();
   }
 
   // ---- Canvas drawing -------------------------------------------------------
@@ -1556,6 +1547,38 @@
       }
 
       setTimelineMultiFile(entries, since, until);
+      if (tlLanes.length > 0) {
+        currentFile = tlLanes[0].file;
+        renderFileList();
+        updateLaneLabels();
+        const lane = tlLanes[0];
+        if (lane.entries.length > 0) {
+          const lastEntry = lane.entries[lane.entries.length - 1];
+          apiJson('/api/history?file=' + encodeURIComponent(currentFile)).then((hist) => {
+            historyEntries = hist;
+            let matchIdx = historyEntries.length - 1;
+            for (let i = 0; i < historyEntries.length; i++) {
+              if (
+                historyEntries[i].timestamp === lastEntry.timestamp &&
+                historyEntries[i].checksum === lastEntry.checksum
+              ) {
+                matchIdx = i;
+                break;
+              }
+            }
+            tlActiveNode = {
+              laneIdx: 0,
+              entryIdx: lane.entries.length - 1,
+              entry: lastEntry,
+            };
+            $diffTitle.textContent = currentFile;
+            selectEntryDiff(matchIdx);
+            requestTimelineDraw();
+          });
+        } else {
+          requestTimelineDraw();
+        }
+      }
     } catch (e) {
       $status.textContent = t('status.activityFailed', { msg: e.message });
     }
@@ -2325,24 +2348,10 @@
 
     if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
 
-    // When mouse is over timeline in multi-lane mode, switch lanes instead
-    if (isMouseOverTimeline && tlMode === 'multi' && tlLanes.length > 1) {
+    // Up/Down: globally affect timeline lane navigation in multi-lane mode; no file list navigation
+    if (tlMode === 'multi' && tlLanes.length > 1) {
       e.preventDefault();
       onTimelineLaneSwitch(e.key === 'ArrowDown' ? 1 : -1);
-      return;
-    }
-
-    if (visibleFilePaths.length === 0) return;
-
-    e.preventDefault();
-    let idx = visibleFilePaths.indexOf(currentFile);
-    if (idx === -1) {
-      idx = e.key === 'ArrowDown' ? -1 : visibleFilePaths.length;
-    }
-    const next =
-      e.key === 'ArrowDown' ? Math.min(visibleFilePaths.length - 1, idx + 1) : Math.max(0, idx - 1);
-    if (visibleFilePaths[next]) {
-      selectFile(visibleFilePaths[next]);
     }
   }
 
