@@ -260,7 +260,9 @@ fn auto_start_server(port: u16, watch_dir: &std::path::Path) -> Result<()> {
 /// Remove old log files in `log_dir`, keeping only the most recent `keep` files.
 /// Log filenames are YYYYMMDD-HHMMSS.mmm.log, so sorting by name descending gives newest first.
 fn prune_old_logs(log_dir: &std::path::Path, keep: usize) {
-    let Ok(entries) = std::fs::read_dir(log_dir) else { return };
+    let Ok(entries) = std::fs::read_dir(log_dir) else {
+        return;
+    };
     let mut names: Vec<std::path::PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())

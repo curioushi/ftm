@@ -2613,7 +2613,10 @@ mod logs_tests {
                     .unwrap_or(false)
             })
             .count();
-        assert_eq!(count_before, total_before, "should have 105 log files before checkout");
+        assert_eq!(
+            count_before, total_before,
+            "should have 105 log files before checkout"
+        );
 
         let (mut server, _port) = start_server_and_checkout(dir.path());
         stop_server(&mut server);

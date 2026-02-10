@@ -30,7 +30,11 @@ impl IndexView {
         Self { last_by_file }
     }
 
-    pub(crate) fn last_entry_for_file<'a>(&self, index: &'a Index, file: &str) -> Option<&'a HistoryEntry> {
+    pub(crate) fn last_entry_for_file<'a>(
+        &self,
+        index: &'a Index,
+        file: &str,
+    ) -> Option<&'a HistoryEntry> {
         self.last_by_file
             .get(file)
             .and_then(|i| index.history.get(*i))

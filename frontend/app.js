@@ -279,7 +279,7 @@
         });
 
         // Row click (name or blank area): select all files under this directory
-        function onDirRowClick(e) {
+        function onDirRowClick() {
           clearTimelineLaneFilter();
           collapsedDirs.delete(fullPath);
           const childFiles = collectFilesUnder(node.children, fullPath);
@@ -1194,40 +1194,6 @@
     }
 
     return closest;
-  }
-
-  /** Find the node whose timestamp is closest to the click position (for single-click when no hit) */
-  function findNodeClosestToTime(mx, my) {
-    const w = parseFloat($canvas.style.width);
-    if (w <= 0 || tlLanes.length === 0) return null;
-    const clickTime = xToTime(mx, w);
-    const lanesAreaTop = RULER_HEIGHT;
-    const visibleIndices = getVisibleLaneIndices();
-    let best = null;
-    let bestTimeDist = Infinity;
-    let bestYDist = Infinity;
-
-    for (let vi = 0; vi < visibleIndices.length; vi++) {
-      const li = visibleIndices[vi];
-      const lane = tlLanes[li];
-      const laneY = lanesAreaTop + vi * LANE_HEIGHT - tlScrollY;
-      const centerY = laneY + LANE_HEIGHT / 2;
-      const dy = my - centerY;
-      const yDist = Math.abs(dy);
-
-      for (let ei = 0; ei < lane.entries.length; ei++) {
-        const entry = lane.entries[ei];
-        const ts = new Date(entry.timestamp).getTime();
-        const timeDist = Math.abs(ts - clickTime);
-        if (timeDist < bestTimeDist || (timeDist === bestTimeDist && yDist < bestYDist)) {
-          bestTimeDist = timeDist;
-          bestYDist = yDist;
-          const x = timeToX(ts, w);
-          best = { laneIdx: li, entryIdx: ei, entry, x, y: centerY };
-        }
-      }
-    }
-    return best;
   }
 
   /** Find the node in a given lane closest in time to refTime (for lane label single-click) */
