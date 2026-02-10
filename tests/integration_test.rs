@@ -2036,9 +2036,16 @@ mod clean_tests {
             .iter()
             .filter(|e| e.file == "clean_orphan.yaml")
             .collect();
-        assert_eq!(entries.len(), 1, "max_history=1 should trim to single entry");
+        assert_eq!(
+            entries.len(),
+            1,
+            "max_history=1 should trim to single entry"
+        );
         let snap_before = count_snapshot_files(dir.path());
-        assert_eq!(snap_before, 2, "Two snapshots on disk before clean (v1 orphan + v2)");
+        assert_eq!(
+            snap_before, 2,
+            "Two snapshots on disk before clean (v1 orphan + v2)"
+        );
 
         let out = run_ftm_with_port(port, &["clean"]);
         assert!(out.status.success());
@@ -2058,7 +2065,11 @@ mod clean_tests {
 
         let out = run_ftm_with_port(port, &["history", "clean_orphan.yaml"]);
         assert!(out.status.success());
-        let entry = index.history.iter().find(|e| e.file == "clean_orphan.yaml").unwrap();
+        let entry = index
+            .history
+            .iter()
+            .find(|e| e.file == "clean_orphan.yaml")
+            .unwrap();
         let checksum = entry.checksum.as_ref().unwrap();
         let out = run_ftm_with_port(port, &["restore", "clean_orphan.yaml", &checksum[..8]]);
         assert!(out.status.success());
@@ -2084,7 +2095,10 @@ mod clean_tests {
         assert!(out.status.success());
 
         let snap_before = count_snapshot_files(dir.path());
-        assert_eq!(snap_before, 2, "Two snapshots before periodic clean (v1 orphan + v2)");
+        assert_eq!(
+            snap_before, 2,
+            "Two snapshots before periodic clean (v1 orphan + v2)"
+        );
 
         std::thread::sleep(std::time::Duration::from_secs(4));
 
