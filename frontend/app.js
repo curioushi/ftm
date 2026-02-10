@@ -45,6 +45,7 @@
   const NODE_RADIUS = 5;
   const NODE_HIT_RADIUS = 8;
   const MIN_VIEW_SPAN = 60 * 1000; // 1 minute minimum zoom
+  const FOCUS_MARGIN = 48; // min padding when panning to keep active node in view
 
   // Colors (must match CSS variables)
   const COLORS = {
@@ -878,6 +879,49 @@
     return tlViewStart + (x / canvasWidth) * (tlViewEnd - tlViewStart);
   }
 
+  /** Pan/scroll the timeline so the active node stays within the visible canvas. */
+  function ensureActiveNodeInView() {
+    if (!tlActiveNode || !$canvas) return;
+    const rect = $canvas.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+    if (w <= 0 || h <= 0) return;
+    const visibleIndices = getVisibleLaneIndices();
+    const vi = visibleIndices.indexOf(tlActiveNode.laneIdx);
+    if (vi === -1) return;
+    const span = tlViewEnd - tlViewStart;
+    if (span <= 0) return;
+
+    const lanesAreaTop = RULER_HEIGHT;
+    const lanesAreaHeight = h - lanesAreaTop;
+    const ts = new Date(tlActiveNode.entry.timestamp).getTime();
+    const nodeX = timeToX(ts, w);
+    const laneY = lanesAreaTop + vi * LANE_HEIGHT - tlScrollY;
+    const nodeCenterY = laneY + LANE_HEIGHT / 2;
+
+    const margin = FOCUS_MARGIN;
+
+    if (nodeX < margin) {
+      const shift = ((margin - nodeX) / w) * span;
+      tlViewStart -= shift;
+      tlViewEnd -= shift;
+    } else if (nodeX > w - margin) {
+      const shift = ((nodeX - (w - margin)) / w) * span;
+      tlViewStart += shift;
+      tlViewEnd += shift;
+    }
+
+    const maxScrollY = Math.max(0, visibleIndices.length * LANE_HEIGHT - lanesAreaHeight);
+    if (nodeCenterY < lanesAreaTop + margin) {
+      tlScrollY = vi * LANE_HEIGHT + LANE_HEIGHT / 2 - margin;
+    } else if (nodeCenterY > lanesAreaTop + lanesAreaHeight - margin) {
+      tlScrollY = vi * LANE_HEIGHT + LANE_HEIGHT / 2 - (lanesAreaHeight - margin);
+    }
+    tlScrollY = Math.max(0, Math.min(maxScrollY, tlScrollY));
+    if ($timelineLanes) $timelineLanes.scrollTop = tlScrollY;
+    updateTimelineLabel();
+  }
+
   /** Midnight (00:00) in local time for given timestamp */
   function getMidnightLocal(ts) {
     const d = new Date(ts);
@@ -1392,6 +1436,7 @@
       }
     }
 
+    ensureActiveNodeInView();
     requestTimelineDraw();
   }
 
@@ -1547,6 +1592,7 @@
       const matched = matchActiveNodeForEntry(historyEntries[idx]);
       if (matched) {
         tlActiveNode = matched;
+        ensureActiveNodeInView();
       }
       requestTimelineDraw();
       if (showFlash) {
