@@ -62,10 +62,10 @@ impl FileWatcher {
                 Err(_) => break, // channel closed
             }
 
-            // Debounce: drain events until 100ms of silence.
+            // Debounce: drain events until 500ms of silence.
             // Only non-.ftm mutation events reset the deadline; irrelevant
             // events (Access, .ftm writes) are consumed without extending it.
-            let mut deadline = Instant::now() + Duration::from_millis(100);
+            let mut deadline = Instant::now() + Duration::from_millis(500);
             loop {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
@@ -77,7 +77,7 @@ impl FileWatcher {
                             && !event.paths.iter().all(|p| p.starts_with(&ftm_dir))
                         {
                             // Relevant mutation — reset deadline
-                            deadline = Instant::now() + Duration::from_millis(100);
+                            deadline = Instant::now() + Duration::from_millis(500);
                         }
                         // Irrelevant events consumed without resetting deadline
                     }
