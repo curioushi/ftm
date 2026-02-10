@@ -14,7 +14,7 @@ use std::path::PathBuf;
 #[command(name = "ftm", about = "File Time Machine - Text file version tracking")]
 struct Cli {
     /// Server port (used by serve and all client commands)
-    #[arg(long, default_value_t = 8765, global = true)]
+    #[arg(long, default_value_t = 13580, global = true)]
     port: u16,
 
     #[command(subcommand)]

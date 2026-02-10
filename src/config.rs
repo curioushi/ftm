@@ -21,7 +21,7 @@ pub struct Settings {
 }
 
 fn default_web_port() -> u16 {
-    8765
+    13580
 }
 
 fn default_scan_interval() -> u64 {
@@ -64,7 +64,7 @@ impl Default for Config {
             settings: Settings {
                 max_history: 100,
                 max_file_size: 30 * 1024 * 1024, // 30MB
-                web_port: 8765,
+                web_port: 13580,
                 scan_interval: 300,
             },
         }

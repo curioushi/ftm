@@ -129,7 +129,7 @@ fn pre_init_ftm(dir: &Path, max_history: usize, max_file_size: u64) {
 settings:
   max_history: {}
   max_file_size: {}
-  web_port: 8765
+  web_port: 13580
 "#,
         max_history, max_file_size
     );
@@ -162,7 +162,7 @@ fn pre_init_ftm_with_scan(dir: &Path, max_history: usize, max_file_size: u64, sc
 settings:
   max_history: {}
   max_file_size: {}
-  web_port: 8765
+  web_port: 13580
   scan_interval: {}
 "#,
         max_history, max_file_size, scan_interval
