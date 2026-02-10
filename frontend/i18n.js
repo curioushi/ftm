@@ -79,6 +79,7 @@ var I18N = (function () {
       'help.multiSelect': 'multi-select files',
       'help.changeFile': 'change selected file',
       'help.timeRange': 'time range (All, 1h, 6h, 1d, 3d, 7d, 30d)',
+      'help.fitTimeRange': 'fit time range to current file list (filtered)',
       'help.timelineMouse': 'Timeline (mouse over)',
       'help.panLR': 'pan left / right',
       'help.zoomIO': 'zoom in / out',
@@ -163,6 +164,8 @@ var I18N = (function () {
       'help.changeFile': '\u5207\u6362\u9009\u4E2D\u6587\u4EF6',
       'help.timeRange':
         '\u65F6\u95F4\u8303\u56F4 (\u5168\u90E8, 1\u5C0F\u65F6, 6\u5C0F\u65F6, 1\u5929, 3\u5929, 7\u5929, 30\u5929)',
+      'help.fitTimeRange':
+        '\u6839\u636E\u5F53\u524D\u6587\u4EF6\u5217\u8868\uFF08\u7B5B\u9009\u540E\uFF09\u81EA\u52A8\u8C03\u8282\u65F6\u95F4\u8303\u56F4',
       'help.timelineMouse': '\u65F6\u95F4\u7EBF (\u9F20\u6807\u60AC\u505C)',
       'help.panLR': '\u5DE6\u53F3\u5E73\u79FB',
       'help.zoomIO': '\u653E\u5927 / \u7F29\u5C0F',

@@ -701,6 +701,32 @@
     return out;
   }
 
+  /** Fit timeline view range to the time span of the current (filtered) file list. */
+  function fitViewToCurrentFileList() {
+    const visibleIndices = getVisibleLaneIndices();
+    const entries = [];
+    for (const i of visibleIndices) {
+      if (tlLanes[i] && tlLanes[i].entries) {
+        for (const e of tlLanes[i].entries) entries.push(e);
+      }
+    }
+    if (entries.length === 0) return;
+    let minTs = Infinity;
+    let maxTs = -Infinity;
+    for (const e of entries) {
+      const ts = new Date(e.timestamp).getTime();
+      if (ts < minTs) minTs = ts;
+      if (ts > maxTs) maxTs = ts;
+    }
+    const span = Math.max(maxTs - minTs, MIN_VIEW_SPAN);
+    const pad = span * 0.08;
+    tlViewStart = minTs - pad;
+    tlViewEnd = maxTs + pad;
+    clearActiveRangeBtn();
+    updateTimelineLabel();
+    requestTimelineDraw();
+  }
+
   function updateLaneLabels() {
     let spacer = $timelineLanes.querySelector('.tl-lane-spacer');
     if (!spacer) {
@@ -2261,6 +2287,13 @@
 
   function onFileListKeydown(e) {
     if (shouldIgnoreKeyboard(e)) return;
+
+    // Z: fit time range to current (filtered) file list on timeline
+    if (e.key === 'z' || e.key === 'Z') {
+      e.preventDefault();
+      fitViewToCurrentFileList();
+      return;
+    }
 
     // Shortcuts 1-7: select time range (toggle on second press). Ignored when focus is in filter input (handled by shouldIgnoreKeyboard).
     const digit = e.key >= '1' && e.key <= '7' ? parseInt(e.key, 10) : 0;
