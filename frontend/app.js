@@ -778,6 +778,12 @@
     }
 
     const visibleIndices = getVisibleLaneIndices();
+    // Clamp tlScrollY to filtered content height so left list and canvas stay in sync
+    const scrollContentHeight = visibleIndices.length * LANE_HEIGHT;
+    const visibleHeight = $timelineLanes.clientHeight || 0;
+    const maxScrollY = Math.max(0, scrollContentHeight - visibleHeight);
+    tlScrollY = Math.min(tlScrollY, maxScrollY);
+
     for (let vi = 0; vi < visibleIndices.length; vi++) {
       const i = visibleIndices[vi];
       const lane = tlLanes[i];
@@ -1158,9 +1164,10 @@
         tlViewEnd = tlDragState.origViewEnd - timeDelta;
       }
 
-      // Pan vertically
+      // Pan vertically (use visible/filtered lane count so scroll matches left list)
       const lanesAreaHeight = parseFloat($canvas.style.height) - RULER_HEIGHT;
-      const maxScrollY = Math.max(0, tlLanes.length * LANE_HEIGHT - lanesAreaHeight);
+      const visibleIndices = getVisibleLaneIndices();
+      const maxScrollY = Math.max(0, visibleIndices.length * LANE_HEIGHT - lanesAreaHeight);
       tlScrollY = Math.max(0, Math.min(maxScrollY, tlDragState.origScrollY - dy));
       $timelineLanes.scrollTop = tlScrollY;
 
@@ -1233,9 +1240,10 @@
       tlViewStart = mouseTime - leftRatio * newSpan;
       tlViewEnd = mouseTime + (1 - leftRatio) * newSpan;
     } else {
-      // Default wheel: vertical scroll lanes
+      // Default wheel: vertical scroll lanes (use visible/filtered lane count)
       const lanesAreaHeight = parseFloat($canvas.style.height) - RULER_HEIGHT;
-      const maxScrollY = Math.max(0, tlLanes.length * LANE_HEIGHT - lanesAreaHeight);
+      const visibleIndices = getVisibleLaneIndices();
+      const maxScrollY = Math.max(0, visibleIndices.length * LANE_HEIGHT - lanesAreaHeight);
       tlScrollY = Math.max(0, Math.min(maxScrollY, tlScrollY + e.deltaY));
       $timelineLanes.scrollTop = tlScrollY;
     }
