@@ -68,9 +68,12 @@
     return COLORS.fgDim;
   }
 
+  var t = I18N.t;
+
   function opLabel(op) {
     if (!op) return '';
-    return op.charAt(0).toUpperCase() + op.slice(1).toLowerCase();
+    var key = 'op.' + op.toLowerCase();
+    return t(key);
   }
 
   // ---- DOM refs ------------------------------------------------------------
@@ -211,7 +214,7 @@
     visibleFilePaths = [];
 
     if (tree.length === 0) {
-      $fileList.innerHTML = '<div class="empty-state">No files</div>';
+      $fileList.innerHTML = '<div class="empty-state">' + escapeHtml(t('state.noFiles')) + '</div>';
       return;
     }
 
@@ -521,7 +524,8 @@
     renderFileList();
     $diffTitle.textContent = path;
     $diffMeta.textContent = '';
-    $diffViewer.innerHTML = '<div class="loading">Loading history...</div>';
+    $diffViewer.innerHTML =
+      '<div class="loading">' + escapeHtml(t('state.loadingHistory')) + '</div>';
 
     // Clear active range button when selecting a specific file
     clearActiveRangeBtn();
@@ -538,7 +542,8 @@
       if (historyEntries.length > 0) {
         selectEntry(historyEntries.length - 1);
       } else {
-        $diffViewer.innerHTML = '<div class="empty-state">No history</div>';
+        $diffViewer.innerHTML =
+          '<div class="empty-state">' + escapeHtml(t('state.noHistory')) + '</div>';
         updateRestoreButton();
       }
     } catch (e) {
@@ -553,7 +558,7 @@
     currentFile = files[0];
     selectedFiles = new Set(files);
     clearActiveRangeBtn();
-    $diffTitle.textContent = files.length + ' files selected';
+    $diffTitle.textContent = t('diff.filesSelected', { n: files.length });
     $diffMeta.textContent = '';
 
     // Load history for all selected files
@@ -607,7 +612,7 @@
         }
       }
     } catch (e) {
-      $status.textContent = 'Failed to load history: ' + e.message;
+      $status.textContent = t('status.historyFailed', { msg: e.message });
     }
   }
 
@@ -675,7 +680,7 @@
 
   function updateTimelineLabel() {
     if (tlLanes.length === 0) {
-      $timelineLabel.textContent = 'No activity';
+      $timelineLabel.textContent = t('state.noActivity');
       return;
     }
     const s = new Date(tlViewStart);
@@ -708,9 +713,9 @@
       const input = document.createElement('input');
       input.type = 'text';
       input.className = 'tl-lane-filter-input';
-      input.placeholder = 'filter files...';
+      input.placeholder = t('timeline.filterPlaceholder');
       input.value = tlLaneFilterQuery;
-      input.setAttribute('aria-label', 'Filter timeline lanes');
+      input.setAttribute('aria-label', t('timeline.filterLanes'));
       let laneFilterTimeout = null;
       input.addEventListener('input', () => {
         tlLaneFilterQuery = input.value;
@@ -723,8 +728,8 @@
       const clearBtn = document.createElement('button');
       clearBtn.type = 'button';
       clearBtn.className = 'filter-clear';
-      clearBtn.setAttribute('aria-label', 'Clear filter');
-      clearBtn.title = 'Clear';
+      clearBtn.setAttribute('aria-label', t('sidebar.clearFilter'));
+      clearBtn.title = t('sidebar.clearTitle');
       clearBtn.textContent = '\u00D7';
       clearBtn.addEventListener('click', () => {
         input.value = '';
@@ -1336,7 +1341,8 @@
 
     if (!toChecksum) {
       // Delete event - show message
-      $diffViewer.innerHTML = '<div class="empty-state">File was deleted in this version</div>';
+      $diffViewer.innerHTML =
+        '<div class="empty-state">' + escapeHtml(t('state.fileDeleted')) + '</div>';
       $diffMeta.textContent =
         opLabel(entry.op) + ' \u2022 ' + formatDateTime(new Date(entry.timestamp));
       return;
@@ -1359,7 +1365,8 @@
       $diffMeta.textContent += ' \u2022 ' + formatSize(entry.size);
     }
 
-    $diffViewer.innerHTML = '<div class="loading">Computing diff...</div>';
+    $diffViewer.innerHTML =
+      '<div class="loading">' + escapeHtml(t('state.computingDiff')) + '</div>';
 
     try {
       let url =
@@ -1507,7 +1514,7 @@
 
       setTimelineMultiFile(entries, since, until);
     } catch (e) {
-      $status.textContent = 'Activity load failed: ' + e.message;
+      $status.textContent = t('status.activityFailed', { msg: e.message });
     }
   }
 
@@ -1662,7 +1669,8 @@
     diffSingleMode = !fromChecksum;
 
     if (diff.hunks.length === 0) {
-      $diffViewer.innerHTML = '<div class="empty-state">No changes</div>';
+      $diffViewer.innerHTML =
+        '<div class="empty-state">' + escapeHtml(t('state.noChanges')) + '</div>';
       return;
     }
 
@@ -1696,7 +1704,7 @@
         if (skipped > 0) {
           diffRows.push({
             type: 'separator',
-            text: '\u00B7\u00B7\u00B7 ' + skipped + ' unchanged lines \u00B7\u00B7\u00B7',
+            text: t('diff.unchangedLines', { n: skipped }),
             oldFrom,
             oldTo,
             newFrom,
@@ -1736,7 +1744,7 @@
       if (remaining > 0) {
         diffRows.push({
           type: 'separator',
-          text: '\u00B7\u00B7\u00B7 ' + remaining + ' unchanged lines \u00B7\u00B7\u00B7',
+          text: t('diff.unchangedLines', { n: remaining }),
           oldFrom: lastEndOld,
           oldTo: diff.old_total,
           newFrom: lastEndNew,
@@ -1943,7 +1951,7 @@
       }
       renderVisibleRows();
     } catch {
-      row.text = '(failed to load snapshot)';
+      row.text = t('state.failedSnapshot');
       renderVisibleRows();
     }
   }
@@ -1951,20 +1959,23 @@
   // ---- Scan button ---------------------------------------------------------
   $btnScan.addEventListener('click', async () => {
     $btnScan.disabled = true;
-    $btnScan.textContent = 'Scanning...';
+    $btnScan.textContent = t('toolbar.scanning');
     try {
       const result = await apiPost('/api/scan');
-      $status.textContent =
-        'Scan: +' + result.created + ' ~' + result.modified + ' -' + result.deleted;
+      $status.textContent = t('status.scanResult', {
+        created: result.created,
+        modified: result.modified,
+        deleted: result.deleted,
+      });
       $btnScan.disabled = false;
-      $btnScan.textContent = 'Scan';
+      $btnScan.textContent = t('toolbar.scan');
       setTimeout(() => location.reload(), 200);
       return;
     } catch (e) {
       $status.textContent = e.message;
     } finally {
       $btnScan.disabled = false;
-      $btnScan.textContent = 'Scan';
+      $btnScan.textContent = t('toolbar.scan');
     }
   });
 
@@ -1972,7 +1983,7 @@
   $btnRestore.addEventListener('click', async () => {
     if (!currentFile || !selectedRestoreChecksum) return;
     const shortChecksum = selectedRestoreChecksum.slice(0, 12);
-    const ok = window.confirm('Restore to version ' + shortChecksum + '?');
+    const ok = window.confirm(t('confirm.restore', { v: shortChecksum }));
     if (!ok) return;
     $btnRestore.disabled = true;
     try {
@@ -1980,7 +1991,7 @@
         file: currentFile,
         checksum: selectedRestoreChecksum,
       });
-      $status.textContent = 'Restore requested for ' + currentFile;
+      $status.textContent = t('status.restoreRequested', { file: currentFile });
       $btnRestore.disabled = false;
       setTimeout(() => location.reload(), 200);
       return;
@@ -2364,6 +2375,16 @@
   }
 
   async function init() {
+    // Initialize i18n
+    var $langSelect = document.getElementById('lang-select');
+    if ($langSelect) {
+      $langSelect.value = I18N.getLang();
+      $langSelect.addEventListener('change', function () {
+        I18N.setLang($langSelect.value);
+      });
+    }
+    I18N.applyI18n();
+
     hideDeletedFiles = !$showDeleted.checked;
     ensureFirstVisitLayoutDefaults();
     initSidebarResize();
@@ -2389,14 +2410,14 @@
           requestTimelineDraw();
         }
       } else {
-        $status.textContent = 'No directory checked out';
-        $diffViewer.innerHTML =
-          '<div class="empty-state">Run <code>ftm checkout &lt;dir&gt;</code> first</div>';
+        $status.textContent = t('status.noCheckout');
+        $diffViewer.innerHTML = '<div class="empty-state">' + t('status.checkoutHint') + '</div>';
         requestTimelineDraw();
       }
     } catch {
-      $status.textContent = 'Server unreachable';
-      $diffViewer.innerHTML = '<div class="empty-state">Cannot connect to FTM server</div>';
+      $status.textContent = t('status.serverUnreachable');
+      $diffViewer.innerHTML =
+        '<div class="empty-state">' + escapeHtml(t('status.noConnect')) + '</div>';
       requestTimelineDraw();
     }
 

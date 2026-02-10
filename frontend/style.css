@@ -145,6 +145,36 @@ input[type='text']:focus {
   line-height: 1;
 }
 
+.lang-select {
+  background: var(--bg-surface);
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  height: 26px;
+  padding: 0 4px;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+  transition:
+    color 0.1s,
+    border-color 0.1s;
+}
+
+.lang-select:hover {
+  color: var(--fg);
+  border-color: var(--fg-dim);
+}
+
+.lang-select:focus {
+  border-color: var(--fg-dim);
+}
+
+.lang-select option {
+  background: var(--bg-surface);
+  color: var(--fg);
+}
+
 /* -- Help overlay & modal -- */
 .help-overlay {
   position: fixed;

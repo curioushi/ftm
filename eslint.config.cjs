@@ -19,6 +19,7 @@ module.exports = [
         location: "readonly",
         ResizeObserver: "readonly",
         Promise: "readonly",
+        I18N: "readonly",
       },
     },
     rules: {

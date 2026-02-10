@@ -10,22 +10,36 @@
     <div id="app">
       <header id="toolbar">
         <div class="toolbar-left">
-          <span class="logo">FTM - File Time Machine</span>
+          <span class="logo" data-i18n="app.title">FTM - File Time Machine</span>
           <button
             type="button"
             id="btn-help"
             class="btn-help"
             title="Help / Shortcuts"
             aria-label="Help"
+            data-i18n-title="toolbar.help"
+            data-i18n-aria-label="toolbar.helpAriaLabel"
           >
             ?
           </button>
+          <select id="lang-select" class="lang-select">
+            <option value="en" data-i18n="lang.en">EN</option>
+            <option value="zh-CN" data-i18n="lang.zhCN">中文</option>
+          </select>
         </div>
         <div class="toolbar-right">
           <label class="toolbar-checkbox"
-            ><input type="checkbox" id="show-deleted" /> Show deleted files</label
+            ><input type="checkbox" id="show-deleted" />
+            <span data-i18n="toolbar.showDeleted">Show deleted files</span></label
           >
-          <button id="btn-scan" title="Scan for changes">Scan</button>
+          <button
+            id="btn-scan"
+            title="Scan for changes"
+            data-i18n="toolbar.scan"
+            data-i18n-title="toolbar.scanTitle"
+          >
+            Scan
+          </button>
           <span id="status"></span>
         </div>
       </header>
@@ -40,8 +54,16 @@
                 placeholder="filter files..."
                 autocomplete="off"
                 spellcheck="false"
+                data-i18n-placeholder="sidebar.filterPlaceholder"
               />
-              <button type="button" class="filter-clear" aria-label="Clear filter" title="Clear">
+              <button
+                type="button"
+                class="filter-clear"
+                aria-label="Clear filter"
+                title="Clear"
+                data-i18n-aria-label="sidebar.clearFilter"
+                data-i18n-title="sidebar.clearTitle"
+              >
                 ×
               </button>
             </div>
@@ -53,13 +75,39 @@
               aria-valuemax="4"
               aria-valuenow="4"
               title="Tree depth: drag or click"
+              data-i18n-title="sidebar.treeDepthTitle"
             >
               <div class="tree-depth-rail">
-                <span class="tree-depth-dot" data-index="0" title="Collapse all"></span>
-                <span class="tree-depth-dot" data-index="1" title="Depth 1"></span>
-                <span class="tree-depth-dot" data-index="2" title="Depth 2"></span>
-                <span class="tree-depth-dot" data-index="3" title="Depth 3"></span>
-                <span class="tree-depth-dot" data-index="4" title="Expand all"></span>
+                <span
+                  class="tree-depth-dot"
+                  data-index="0"
+                  title="Collapse all"
+                  data-i18n-title="sidebar.collapseAll"
+                ></span>
+                <span
+                  class="tree-depth-dot"
+                  data-index="1"
+                  title="Depth 1"
+                  data-i18n-title="sidebar.depth1"
+                ></span>
+                <span
+                  class="tree-depth-dot"
+                  data-index="2"
+                  title="Depth 2"
+                  data-i18n-title="sidebar.depth2"
+                ></span>
+                <span
+                  class="tree-depth-dot"
+                  data-index="3"
+                  title="Depth 3"
+                  data-i18n-title="sidebar.depth3"
+                ></span>
+                <span
+                  class="tree-depth-dot"
+                  data-index="4"
+                  title="Expand all"
+                  data-i18n-title="sidebar.expandAll"
+                ></span>
               </div>
               <div class="tree-depth-thumb" id="tree-depth-thumb"></div>
             </div>
@@ -69,10 +117,19 @@
         <div id="resize-handle"></div>
         <div id="content">
           <div id="diff-header">
-            <span id="diff-title">Select a file to view history</span>
+            <span id="diff-title" data-i18n="content.selectFile"
+              >Select a file to view history</span
+            >
             <div id="diff-actions">
               <span id="diff-meta"></span>
-              <button id="btn-restore" title="Restore selected version">Restore</button>
+              <button
+                id="btn-restore"
+                title="Restore selected version"
+                data-i18n="content.restore"
+                data-i18n-title="content.restoreTitle"
+              >
+                Restore
+              </button>
             </div>
           </div>
           <div id="diff-viewer"></div>
@@ -83,13 +140,25 @@
       <footer id="timeline-bar">
         <div id="timeline-toolbar">
           <div id="timeline-range-buttons">
-            <button class="tl-range-btn" data-range="all">All</button>
-            <button class="tl-range-btn" data-range="3600000">1h</button>
-            <button class="tl-range-btn" data-range="21600000">6h</button>
-            <button class="tl-range-btn" data-range="86400000">1d</button>
-            <button class="tl-range-btn" data-range="259200000">3d</button>
-            <button class="tl-range-btn" data-range="604800000">7d</button>
-            <button class="tl-range-btn" data-range="2592000000">30d</button>
+            <button class="tl-range-btn" data-range="all" data-i18n="timeline.rangeAll">All</button>
+            <button class="tl-range-btn" data-range="3600000" data-i18n="timeline.range1h">
+              1h
+            </button>
+            <button class="tl-range-btn" data-range="21600000" data-i18n="timeline.range6h">
+              6h
+            </button>
+            <button class="tl-range-btn" data-range="86400000" data-i18n="timeline.range1d">
+              1d
+            </button>
+            <button class="tl-range-btn" data-range="259200000" data-i18n="timeline.range3d">
+              3d
+            </button>
+            <button class="tl-range-btn" data-range="604800000" data-i18n="timeline.range7d">
+              7d
+            </button>
+            <button class="tl-range-btn" data-range="2592000000" data-i18n="timeline.range30d">
+              30d
+            </button>
           </div>
           <div id="timeline-label"></div>
         </div>
@@ -109,32 +178,62 @@
           aria-labelledby="help-title"
           aria-modal="true"
         >
-          <h2 id="help-title">Help</h2>
-          <p class="help-intro">
-            FTM tracks file changes over time in your project. It lets you browse any file’s
+          <h2 id="help-title" data-i18n="help.title">Help</h2>
+          <p class="help-intro" data-i18n="help.intro">
+            FTM tracks file changes over time in your project. It lets you browse any file's
             history, see what changed between versions, and restore a previous version when you need
             to undo or recover.
           </p>
-          <h3 class="help-section">Shortcuts</h3>
+          <h3 class="help-section" data-i18n="help.shortcuts">Shortcuts</h3>
           <dl class="help-shortcuts">
-            <dt>File list</dt>
-            <dd><kbd>Ctrl</kbd>/<kbd>Cmd</kbd> + click — multi-select files</dd>
-            <dd><kbd>↑</kbd> / <kbd>↓</kbd> — change selected file</dd>
-            <dd><kbd>1</kbd>–<kbd>7</kbd> — time range (All, 1h, 6h, 1d, 3d, 7d, 30d)</dd>
-            <dt>Timeline (mouse over)</dt>
-            <dd><kbd>A</kbd> / <kbd>D</kbd> — pan left / right</dd>
-            <dd><kbd>W</kbd> / <kbd>S</kbd> — zoom in / out</dd>
-            <dd><kbd>←</kbd> / <kbd>→</kbd> — previous / next version</dd>
-            <dd><kbd>↑</kbd> / <kbd>↓</kbd> — switch lane (multi-file)</dd>
-            <dt>Timeline wheel</dt>
-            <dd><kbd>Shift</kbd> + wheel — horizontal pan</dd>
-            <dd><kbd>Ctrl</kbd>/<kbd>Cmd</kbd> + wheel — zoom at mouse</dd>
+            <dt data-i18n="help.fileList">File list</dt>
+            <dd>
+              <kbd>Ctrl</kbd>/<kbd>Cmd</kbd> + click —
+              <span data-i18n="help.multiSelect">multi-select files</span>
+            </dd>
+            <dd>
+              <kbd>↑</kbd> / <kbd>↓</kbd> —
+              <span data-i18n="help.changeFile">change selected file</span>
+            </dd>
+            <dd>
+              <kbd>1</kbd>–<kbd>7</kbd> —
+              <span data-i18n="help.timeRange">time range (All, 1h, 6h, 1d, 3d, 7d, 30d)</span>
+            </dd>
+            <dt data-i18n="help.timelineMouse">Timeline (mouse over)</dt>
+            <dd>
+              <kbd>A</kbd> / <kbd>D</kbd> —
+              <span data-i18n="help.panLR">pan left / right</span>
+            </dd>
+            <dd>
+              <kbd>W</kbd> / <kbd>S</kbd> —
+              <span data-i18n="help.zoomIO">zoom in / out</span>
+            </dd>
+            <dd>
+              <kbd>←</kbd> / <kbd>→</kbd> —
+              <span data-i18n="help.prevNext">previous / next version</span>
+            </dd>
+            <dd>
+              <kbd>↑</kbd> / <kbd>↓</kbd> —
+              <span data-i18n="help.switchLane">switch lane (multi-file)</span>
+            </dd>
+            <dt data-i18n="help.timelineWheel">Timeline wheel</dt>
+            <dd>
+              <kbd>Shift</kbd> + wheel —
+              <span data-i18n="help.hPan">horizontal pan</span>
+            </dd>
+            <dd>
+              <kbd>Ctrl</kbd>/<kbd>Cmd</kbd> + wheel —
+              <span data-i18n="help.zoomAtMouse">zoom at mouse</span>
+            </dd>
           </dl>
-          <p class="help-close-hint">Press <kbd>Esc</kbd> or click outside to close.</p>
+          <p class="help-close-hint" data-i18n-html="help.closeHint">
+            Press <kbd>Esc</kbd> or click outside to close.
+          </p>
         </div>
       </div>
     </div>
 
+    <script src="i18n.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
