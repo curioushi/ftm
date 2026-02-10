@@ -1400,7 +1400,10 @@
     const w = parseFloat($canvas.style.width);
     const ts = new Date(entry.timestamp).getTime();
     const nodeX = timeToX(ts, w);
-    const laneY = RULER_HEIGHT + node.laneIdx * LANE_HEIGHT - tlScrollY;
+    const visibleIndices = getVisibleLaneIndices();
+    const vi = visibleIndices.indexOf(node.laneIdx);
+    if (vi === -1) return;
+    const laneY = RULER_HEIGHT + vi * LANE_HEIGHT - tlScrollY;
     const nodeCenterY = laneY + LANE_HEIGHT / 2;
 
     // Viewport coords of the node center
