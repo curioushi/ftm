@@ -25,8 +25,6 @@
   const TL_HEIGHT_STORAGE_KEY = 'ftm-timeline-height';
   const TL_LANES_WIDTH_STORAGE_KEY = 'ftm-tl-lanes-width';
   const TREE_DEPTH_STORAGE_KEY = 'ftm-tree-depth';
-  const WORK_MODE_STORAGE_KEY = 'ftm-work-mode';
-  const WORK_MODE_TIME_RANGE_KEY = 'ftm-work-mode-time-range';
 
   // Timeline state
   let tlViewStart = 0; // ms timestamp (left edge of visible range)
@@ -264,7 +262,6 @@
         // Arrow click: toggle expand/collapse
         arrow.addEventListener('click', (e) => {
           e.stopPropagation();
-          clearTimelineLaneFilter();
           if (collapsedDirs.has(fullPath)) {
             collapsedDirs.delete(fullPath);
           } else {
@@ -276,7 +273,6 @@
         // Dir name click: select all files under this directory
         nameSpan.addEventListener('click', (e) => {
           e.stopPropagation();
-          clearTimelineLaneFilter();
           // Ensure expanded so user can see selected files
           collapsedDirs.delete(fullPath);
           const childFiles = collectFilesUnder(node.children, fullPath);
@@ -318,7 +314,6 @@
         fileRow.appendChild(nameSpan);
         fileRow.appendChild(countSpan);
         fileRow.addEventListener('click', (e) => {
-          clearTimelineLaneFilter();
           if (e.ctrlKey || e.metaKey) {
             // Ctrl/Cmd+click: toggle file in multi-selection
             if (selectedFiles.has(fullPath)) {
@@ -801,21 +796,26 @@
       label.style.height = LANE_HEIGHT + 'px';
       label.style.lineHeight = LANE_HEIGHT + 'px';
       const file = lane.file;
-      label.addEventListener('dblclick', () => {
-        if (tlMode === 'multi') {
-          selectFile(file);
+      label.addEventListener('click', () => {
+        const laneIdx = tlLanes.findIndex((l) => l.file === file);
+        if (laneIdx === -1) return;
+        const refTime =
+          tlActiveNode != null
+            ? new Date(tlActiveNode.entry.timestamp).getTime()
+            : (tlViewStart + tlViewEnd) / 2;
+        const node = findNodeInLaneClosestToTime(laneIdx, refTime);
+        if (node) {
+          onNodeClick(node);
+          updateLaneLabels();
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => flashTooltipAtActiveNode());
+          });
         }
       });
       $timelineLanes.appendChild(label);
     }
     // Sync scroll
     $timelineLanes.scrollTop = tlScrollY;
-  }
-
-  function clearTimelineLaneFilter() {
-    tlLaneFilterQuery = '';
-    updateLaneLabels();
-    requestTimelineDraw();
   }
 
   // ---- Canvas drawing -------------------------------------------------------
@@ -1138,6 +1138,65 @@
     return closest;
   }
 
+  /** Find the node whose timestamp is closest to the click position (for single-click when no hit) */
+  function findNodeClosestToTime(mx, my) {
+    const w = parseFloat($canvas.style.width);
+    if (w <= 0 || tlLanes.length === 0) return null;
+    const clickTime = xToTime(mx, w);
+    const lanesAreaTop = RULER_HEIGHT;
+    const visibleIndices = getVisibleLaneIndices();
+    let best = null;
+    let bestTimeDist = Infinity;
+    let bestYDist = Infinity;
+
+    for (let vi = 0; vi < visibleIndices.length; vi++) {
+      const li = visibleIndices[vi];
+      const lane = tlLanes[li];
+      const laneY = lanesAreaTop + vi * LANE_HEIGHT - tlScrollY;
+      const centerY = laneY + LANE_HEIGHT / 2;
+      const dy = my - centerY;
+      const yDist = Math.abs(dy);
+
+      for (let ei = 0; ei < lane.entries.length; ei++) {
+        const entry = lane.entries[ei];
+        const ts = new Date(entry.timestamp).getTime();
+        const timeDist = Math.abs(ts - clickTime);
+        if (timeDist < bestTimeDist || (timeDist === bestTimeDist && yDist < bestYDist)) {
+          bestTimeDist = timeDist;
+          bestYDist = yDist;
+          const x = timeToX(ts, w);
+          best = { laneIdx: li, entryIdx: ei, entry, x, y: centerY };
+        }
+      }
+    }
+    return best;
+  }
+
+  /** Find the node in a given lane closest in time to refTime (for lane label single-click) */
+  function findNodeInLaneClosestToTime(laneIdx, refTimeMs) {
+    if (laneIdx < 0 || laneIdx >= tlLanes.length) return null;
+    const lane = tlLanes[laneIdx];
+    if (lane.entries.length === 0) return null;
+    const w = parseFloat($canvas.style.width);
+    if (w <= 0) return null;
+    let best = null;
+    let bestDist = Infinity;
+    for (let ei = 0; ei < lane.entries.length; ei++) {
+      const entry = lane.entries[ei];
+      const ts = new Date(entry.timestamp).getTime();
+      const dist = Math.abs(ts - refTimeMs);
+      if (dist < bestDist) {
+        bestDist = dist;
+        const x = timeToX(ts, w);
+        const vi = getVisibleLaneIndices().indexOf(laneIdx);
+        const lanesAreaTop = RULER_HEIGHT;
+        const centerY = lanesAreaTop + vi * LANE_HEIGHT - tlScrollY + LANE_HEIGHT / 2;
+        best = { laneIdx, entryIdx: ei, entry, x, y: centerY };
+      }
+    }
+    return best;
+  }
+
   function onCanvasPointerDown(e) {
     if (e.button !== 0) return;
 
@@ -1207,13 +1266,22 @@
     tlDragState = null;
     $canvas.classList.remove('grabbing');
     document.body.classList.remove('tl-dragging');
+    try {
+      e.target.releasePointerCapture(e.pointerId);
+    } catch {
+      /* releasePointerCapture can throw if pointer was already released */
+    }
 
     if (!wasDrag) {
-      // Click - select node
       const { x, y } = getCanvasCoords(e);
-      const node = hitTestNode(x, y);
+      let node = hitTestNode(x, y);
+      if (!node) node = findNodeClosestToTime(x, y);
       if (node) {
         onNodeClick(node);
+        updateLaneLabels();
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => flashTooltipAtActiveNode());
+        });
       }
     }
   }
@@ -1476,29 +1544,10 @@
   }
 
   // ---- Range buttons --------------------------------------------------------
-  function saveWorkModeFile() {
-    try {
-      localStorage.setItem(WORK_MODE_STORAGE_KEY, 'file');
-      localStorage.removeItem(WORK_MODE_TIME_RANGE_KEY);
-    } catch {
-      /* ignore */
-    }
-  }
-
-  function saveWorkModeTime(range) {
-    try {
-      localStorage.setItem(WORK_MODE_STORAGE_KEY, 'time');
-      localStorage.setItem(WORK_MODE_TIME_RANGE_KEY, String(range));
-    } catch {
-      /* ignore */
-    }
-  }
-
   function clearActiveRangeBtn() {
     if (tlActiveRangeBtn) {
       tlActiveRangeBtn.classList.remove('active');
       tlActiveRangeBtn = null;
-      saveWorkModeFile();
     }
   }
 
@@ -1507,21 +1556,6 @@
     buttons.forEach((btn) => {
       btn.addEventListener('click', () => onRangeButtonClick(btn));
     });
-  }
-
-  /** Restore work mode: if mode is 'time', apply range. Pass savedMode/savedRange when restoring after init so file restore cannot overwrite them. */
-  async function restoreWorkMode(savedMode, savedRange) {
-    try {
-      const mode = savedMode != null ? savedMode : localStorage.getItem(WORK_MODE_STORAGE_KEY);
-      const range =
-        savedRange != null ? savedRange : localStorage.getItem(WORK_MODE_TIME_RANGE_KEY);
-      if (mode !== 'time' || !range) return;
-      const btn = document.querySelector('.tl-range-btn[data-range="' + range + '"]');
-      if (!btn) return;
-      await onRangeButtonClick(btn);
-    } catch {
-      /* ignore */
-    }
   }
 
   async function onRangeButtonClick(btn) {
@@ -1544,7 +1578,6 @@
     clearActiveRangeBtn();
     btn.classList.add('active');
     tlActiveRangeBtn = btn;
-    saveWorkModeTime(range);
 
     const now = Date.now();
     let since;
@@ -2501,8 +2534,6 @@
       if (health.watch_dir) {
         $status.textContent = health.watch_dir;
         await loadFiles();
-        const savedWorkMode = localStorage.getItem(WORK_MODE_STORAGE_KEY);
-        const savedTimeRange = localStorage.getItem(WORK_MODE_TIME_RANGE_KEY);
         const storedPaths = restoreSelectedFiles().filter((p) => treeHasFile(fileTree, p, ''));
         if (storedPaths.length > 1) {
           storedPaths.forEach((p) => expandDirsForPath(p));
@@ -2516,7 +2547,6 @@
         } else {
           requestTimelineDraw();
         }
-        await restoreWorkMode(savedWorkMode, savedTimeRange);
       } else {
         $status.textContent = t('status.noCheckout');
         $diffViewer.innerHTML = '<div class="empty-state">' + t('status.checkoutHint') + '</div>';
