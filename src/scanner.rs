@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::path_util;
 use crate::storage::{IndexView, Storage};
 use crate::types::{Index, Operation};
 use anyhow::Result;
@@ -111,7 +112,7 @@ impl Scanner {
                 }
 
                 let rel_path = path.strip_prefix(&self.root_dir).unwrap_or(&path);
-                let file_key = rel_path.to_string_lossy().to_string();
+                let file_key = path_util::normalize_rel_path(&rel_path.to_string_lossy());
                 scanned_files.insert(file_key);
 
                 match self
@@ -145,7 +146,7 @@ impl Scanner {
     /// Used to skip entire directory trees early.
     fn is_excluded_dir(&self, path: &Path) -> bool {
         let rel_path = path.strip_prefix(&self.root_dir).unwrap_or(path);
-        let path_str = rel_path.to_string_lossy();
+        let path_str = path_util::normalize_rel_path(&rel_path.to_string_lossy());
 
         // Append separator so patterns like "**/target/**" match directory paths
         let dir_str = format!("{}/", path_str);

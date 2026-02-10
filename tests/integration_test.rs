@@ -2,23 +2,45 @@
 //!
 //! Run with: cargo test --release -- --test-threads=1
 
-use assert_cmd::Command;
-use predicates::prelude::*;
+use ctor::ctor;
 use serde::Deserialize;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
+use std::process::Command;
 use tempfile::tempdir;
+
+// ---------------------------------------------------------------------------
+// Run once before any test: kill all ftm processes in the system
+// ---------------------------------------------------------------------------
+
+#[ctor]
+fn kill_all_ftm_before_tests() {
+    kill_all_ftm_processes();
+}
+
+/// Kill all ftm processes in the system (Windows: taskkill ftm.exe; Unix: pkill ftm).
+fn kill_all_ftm_processes() {
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/IM", "ftm.exe"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(unix)]
+    {
+        let _ = Command::new("pkill")
+            .args(["-9", "ftm"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Helper to get ftm command with --port set (for client commands).
-fn ftm_client(port: u16) -> Command {
-    let mut cmd = Command::from_std(std::process::Command::new(env!("CARGO_BIN_EXE_ftm")));
-    cmd.args(["--port", &port.to_string()]);
-    cmd
-}
 
 /// Guard that keeps the temp dir on test failure and prints its path.
 struct TestDirGuard {
@@ -89,10 +111,14 @@ fn start_server() -> (std::process::Child, u16) {
 /// Start server and checkout a directory. Returns (child, port).
 fn start_server_and_checkout(dir: &Path) -> (std::process::Child, u16) {
     let (child, port) = start_server();
-    ftm_client(port)
-        .args(["checkout", dir.to_str().unwrap()])
-        .assert()
-        .success();
+    let path_s = dir.to_str().unwrap();
+    let out = run_ftm_with_port(port, &["checkout", path_s]);
+    assert!(
+        out.status.success(),
+        "checkout should succeed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
     // Brief delay for watcher to initialize
     std::thread::sleep(std::time::Duration::from_millis(50));
     (child, port)
@@ -101,6 +127,89 @@ fn start_server_and_checkout(dir: &Path) -> (std::process::Child, u16) {
 fn stop_server(child: &mut std::process::Child) {
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Run ftm with given args, draining stdout/stderr in background to avoid pipe deadlock (Windows/Unix).
+fn run_ftm_output(args: &[&str]) -> std::process::Output {
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn ftm");
+    let stdout_handle = child.stdout.take();
+    let stderr_handle = child.stderr.take();
+    let stdout_collector = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let stderr_collector = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let so = stdout_collector.clone();
+    let se = stderr_collector.clone();
+    std::thread::spawn(move || {
+        if let Some(mut out) = stdout_handle {
+            let mut buf = [0u8; 4096];
+            loop {
+                match std::io::Read::read(&mut out, &mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if let Ok(mut v) = so.lock() {
+                            v.extend_from_slice(&buf[..n]);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+    });
+    std::thread::spawn(move || {
+        if let Some(mut err) = stderr_handle {
+            let mut buf = [0u8; 4096];
+            loop {
+                match std::io::Read::read(&mut err, &mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if let Ok(mut v) = se.lock() {
+                            v.extend_from_slice(&buf[..n]);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+    });
+    let status = child.wait().expect("failed to wait on ftm");
+    let stdout = std::mem::take(&mut *stdout_collector.lock().unwrap());
+    let stderr = std::mem::take(&mut *stderr_collector.lock().unwrap());
+    std::process::Output {
+        status,
+        stdout,
+        stderr,
+    }
+}
+
+/// Run ftm with --port and given args (uses run_ftm_output to avoid pipe deadlock).
+fn run_ftm_with_port(port: u16, args: &[&str]) -> std::process::Output {
+    let port_s = port.to_string();
+    let all: Vec<&str> = std::iter::once("--port")
+        .chain(std::iter::once(port_s.as_str()))
+        .chain(args.iter().copied())
+        .collect();
+    run_ftm_output(&all)
+}
+
+/// Kill a process by PID (cross-platform: kill on Unix, taskkill on Windows).
+fn kill_process(pid: u32) {
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .output();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .output();
+    }
 }
 
 /// Pre-initialize .ftm in a directory with custom settings.
@@ -204,6 +313,11 @@ struct TestHistoryEntry {
     size: Option<u64>,
 }
 
+#[derive(Deserialize)]
+struct HealthPid {
+    pid: Option<u32>,
+}
+
 /// Load and parse `.ftm/index.json` from the test directory.
 fn load_test_index(dir: &Path) -> TestIndex {
     let content =
@@ -270,11 +384,18 @@ mod checkout_tests {
         let dir = setup_test_dir();
         let (mut server, port) = start_server();
 
-        ftm_client(port)
-            .args(["checkout", dir.path().to_str().unwrap()])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("Checked out and watching"));
+        let path_s = dir.path().to_str().unwrap();
+        let out = run_ftm_with_port(port, &["checkout", path_s]);
+        assert!(
+            out.status.success(),
+            "checkout should succeed: stdout={}, stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("Checked out and watching"),
+            "stdout should contain success message"
+        );
 
         assert!(dir.path().join(".ftm").exists());
         assert!(dir.path().join(".ftm/config.yaml").exists());
@@ -287,83 +408,46 @@ mod checkout_tests {
     fn test_checkout_auto_starts_server() {
         let dir = setup_test_dir();
 
-        // Use a random port to avoid conflicts
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        drop(listener); // free the port
+        drop(listener);
 
-        // Checkout without a running server — should auto-start one.
-        // Capture output so we can parse the server PID from stderr.
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
-            .args([
-                "--port",
-                &port.to_string(),
-                "checkout",
-                dir.path().to_str().unwrap(),
-            ])
-            .output()
-            .expect("failed to run ftm checkout");
-        assert!(output.status.success(), "checkout should succeed");
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let path_s = dir.path().to_str().unwrap();
+        let out = run_ftm_with_port(port, &["checkout", path_s]);
         assert!(
-            stdout.contains("Checked out and watching"),
-            "stdout should contain success message, got: {}",
-            stdout
+            out.status.success(),
+            "checkout should succeed: stdout={}, stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
         );
 
-        // Parse server PID from stderr: "Starting FTM server on port X (pid: Y)..."
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let server_pid: Option<u32> = stderr.lines().find(|l| l.contains("pid:")).and_then(|l| {
-            l.split("pid: ")
-                .nth(1)?
-                .trim_end_matches(|c: char| !c.is_ascii_digit())
-                .parse()
-                .ok()
-        });
-
-        // .ftm directory should have been created by the checkout handler
         assert!(dir.path().join(".ftm").exists());
         assert!(dir.path().join(".ftm/config.yaml").exists());
         assert!(dir.path().join(".ftm/index.json").exists());
 
-        // Server should now be reachable
-        let health_resp = reqwest::blocking::Client::builder()
+        let client = reqwest::blocking::Client::builder()
             .no_proxy()
             .build()
-            .unwrap()
+            .unwrap();
+        let health_resp = client
             .get(format!("http://127.0.0.1:{}/api/health", port))
             .timeout(std::time::Duration::from_secs(2))
-            .send();
+            .send()
+            .expect("health request failed");
         assert!(
-            health_resp.is_ok() && health_resp.unwrap().status().is_success(),
+            health_resp.status().is_success(),
             "Server should be healthy after auto-start"
         );
+        let server_pid: Option<u32> = health_resp.json::<HealthPid>().ok().and_then(|h| h.pid);
 
-        // Write a file and verify the watcher is functional
         std::fs::write(dir.path().join("autotest.yaml"), "key: value").unwrap();
         assert!(
             wait_for_index(dir.path(), "autotest.yaml", 1, 3000),
             "Watcher should be functional after auto-start"
         );
 
-        // Clean up: kill the auto-started server
         if let Some(pid) = server_pid {
-            #[cfg(unix)]
-            {
-                std::process::Command::new("kill")
-                    .arg(pid.to_string())
-                    .output()
-                    .ok();
-                // Wait briefly for the process to exit
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            #[cfg(windows)]
-            {
-                std::process::Command::new("taskkill")
-                    .args(["/F", "/PID", &pid.to_string()])
-                    .output()
-                    .ok();
-            }
+            kill_process(pid);
         }
     }
 
@@ -390,20 +474,13 @@ mod checkout_tests {
         drop(listener);
 
         // Checkout triggers kill_all_servers — both A and B should be killed
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
-            .args([
-                "--port",
-                &port.to_string(),
-                "checkout",
-                dir.path().to_str().unwrap(),
-            ])
-            .output()
-            .expect("failed to run ftm checkout");
+        let path_s = dir.path().to_str().unwrap();
+        let out = run_ftm_with_port(port, &["checkout", path_s]);
         assert!(
-            output.status.success(),
+            out.status.success(),
             "checkout should succeed: stdout={}, stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
         );
 
         // Both servers should have been killed
@@ -417,21 +494,21 @@ mod checkout_tests {
             "server A should also be dead (kill_all_servers kills everything)"
         );
 
-        // Clean up: kill the auto-started server
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let server_pid: Option<u32> = stderr.lines().find(|l| l.contains("pid:")).and_then(|l| {
-            l.split("pid: ")
-                .nth(1)?
-                .trim_end_matches(|c: char| !c.is_ascii_digit())
-                .parse()
-                .ok()
-        });
-        if let Some(pid) = server_pid {
-            std::process::Command::new("kill")
-                .arg(pid.to_string())
-                .output()
-                .ok();
-            std::thread::sleep(std::time::Duration::from_millis(100));
+        // Clean up: kill the auto-started server (get PID from health API)
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        if let Ok(resp) = client
+            .get(format!("http://127.0.0.1:{}/api/health", port))
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+        {
+            if let Ok(health) = resp.json::<HealthPid>() {
+                if let Some(pid) = health.pid {
+                    kill_process(pid);
+                }
+            }
         }
     }
 
@@ -440,18 +517,29 @@ mod checkout_tests {
         let dir = setup_test_dir();
         let (mut server, port) = start_server();
 
+        let path_s = dir.path().to_str().unwrap();
+
         // First checkout
-        ftm_client(port)
-            .args(["checkout", dir.path().to_str().unwrap()])
-            .assert()
-            .success();
+        let out1 = run_ftm_with_port(port, &["checkout", path_s]);
+        assert!(
+            out1.status.success(),
+            "first checkout should succeed: stdout={}, stderr={}",
+            String::from_utf8_lossy(&out1.stdout),
+            String::from_utf8_lossy(&out1.stderr),
+        );
 
         // Second checkout of the same directory should be a no-op
-        ftm_client(port)
-            .args(["checkout", dir.path().to_str().unwrap()])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("Already watching"));
+        let out2 = run_ftm_with_port(port, &["checkout", path_s]);
+        assert!(
+            out2.status.success(),
+            "second checkout should succeed: stdout={}, stderr={}",
+            String::from_utf8_lossy(&out2.stdout),
+            String::from_utf8_lossy(&out2.stderr),
+        );
+        assert!(
+            String::from_utf8_lossy(&out2.stdout).contains("Already watching"),
+            "stdout should contain Already watching"
+        );
 
         stop_server(&mut server);
     }
@@ -466,27 +554,19 @@ mod checkout_tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
+        let path_a = dir_a.path().to_str().unwrap();
+        let path_b = dir_b.path().to_str().unwrap();
+
         // Checkout dir A (auto-starts server)
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
-            .args([
-                "--port",
-                &port.to_string(),
-                "checkout",
-                dir_a.path().to_str().unwrap(),
-            ])
-            .output()
-            .expect("failed to run ftm checkout A");
+        let out_a = run_ftm_with_port(port, &["checkout", path_a]);
         assert!(
-            output.status.success(),
+            out_a.status.success(),
             "First checkout should succeed: stdout={}, stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&out_a.stdout),
+            String::from_utf8_lossy(&out_a.stderr),
         );
 
-        // Verify dir A is being watched
         assert!(dir_a.path().join(".ftm").exists());
-
-        // Write a file to dir A and confirm watcher is working
         std::fs::write(dir_a.path().join("a.yaml"), "a: 1").unwrap();
         assert!(
             wait_for_index(dir_a.path(), "a.yaml", 1, 3000),
@@ -494,33 +574,15 @@ mod checkout_tests {
         );
 
         // Checkout dir B — should switch: shutdown old server, start new, checkout
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
-            .args([
-                "--port",
-                &port.to_string(),
-                "checkout",
-                dir_b.path().to_str().unwrap(),
-            ])
-            .output()
-            .expect("failed to run ftm checkout B");
-        let stdout_b = String::from_utf8_lossy(&output.stdout);
-        let stderr_b = String::from_utf8_lossy(&output.stderr);
+        let out_b = run_ftm_with_port(port, &["checkout", path_b]);
         assert!(
-            output.status.success(),
+            out_b.status.success(),
             "Switch checkout should succeed: stdout={}, stderr={}",
-            stdout_b,
-            stderr_b,
-        );
-        assert!(
-            stdout_b.contains("Checked out and watching"),
-            "Expected checkout success in stdout, got: {}",
-            stdout_b
+            String::from_utf8_lossy(&out_b.stdout),
+            String::from_utf8_lossy(&out_b.stderr),
         );
 
-        // Verify dir B is being watched
         assert!(dir_b.path().join(".ftm").exists());
-
-        // Write to dir B and verify watcher works on the new directory
         std::fs::write(dir_b.path().join("b.yaml"), "b: 1").unwrap();
         assert!(
             wait_for_index(dir_b.path(), "b.yaml", 1, 3000),
@@ -528,10 +590,7 @@ mod checkout_tests {
         );
 
         // ls should show dir B
-        let ls_out = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
-            .args(["--port", &port.to_string(), "ls"])
-            .output()
-            .expect("failed to run ftm ls");
+        let ls_out = run_ftm_with_port(port, &["ls"]);
         let ls_stdout = String::from_utf8_lossy(&ls_out.stdout);
         let dir_b_str = dir_b
             .path()
@@ -545,34 +604,21 @@ mod checkout_tests {
             ls_stdout
         );
 
-        // Clean up: parse last server PID from stderr and kill
-        let last_pid: Option<u32> = stderr_b
-            .lines()
-            .rev()
-            .find(|l| l.contains("pid:"))
-            .and_then(|l| {
-                l.split("pid: ")
-                    .nth(1)?
-                    .trim_end_matches(|c: char| !c.is_ascii_digit())
-                    .parse()
-                    .ok()
-            });
-        if let Some(pid) = last_pid {
-            #[cfg(unix)]
-            {
-                std::process::Command::new("kill")
-                    .arg(pid.to_string())
-                    .output()
-                    .ok();
+        // Clean up: get server PID from health API and kill
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        if let Ok(resp) = client
+            .get(format!("http://127.0.0.1:{}/api/health", port))
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+        {
+            if let Ok(health) = resp.json::<HealthPid>() {
+                if let Some(pid) = health.pid {
+                    kill_process(pid);
+                }
             }
-            #[cfg(windows)]
-            {
-                std::process::Command::new("taskkill")
-                    .args(["/F", "/PID", &pid.to_string()])
-                    .output()
-                    .ok();
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
         }
     }
 }
@@ -584,11 +630,13 @@ mod ls_tests {
     fn test_ls_not_checked_out() {
         let (mut server, port) = start_server();
 
-        ftm_client(port)
-            .arg("ls")
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("No directory checked out"));
+        let out = run_ftm_with_port(port, &["ls"]);
+        assert!(!out.status.success(), "ls should fail when not checked out");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("No directory checked out"),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         stop_server(&mut server);
     }
@@ -598,10 +646,8 @@ mod ls_tests {
         let dir = setup_test_dir();
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        let output = ftm_client(port)
-            .arg("ls")
-            .output()
-            .expect("failed to run ls");
+        let output = run_ftm_with_port(port, &["ls"]);
+        assert!(output.status.success(), "ls should succeed");
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         let dir_str = dir
@@ -628,11 +674,13 @@ mod ls_tests {
         let dir = setup_test_dir();
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm_client(port)
-            .arg("ls")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("No files tracked yet"));
+        let out = run_ftm_with_port(port, &["ls"]);
+        assert!(out.status.success(), "ls should succeed");
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("No files tracked yet"),
+            "stdout: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
 
         stop_server(&mut server);
     }
@@ -650,13 +698,12 @@ mod ls_tests {
         assert!(wait_for_index(dir.path(), "b.yaml", 1, 2000));
         assert!(wait_for_index(dir.path(), "c.yaml", 1, 2000));
 
-        ftm_client(port)
-            .arg("ls")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("a.yaml"))
-            .stdout(predicate::str::contains("b.yaml"))
-            .stdout(predicate::str::contains("c.yaml"));
+        let out = run_ftm_with_port(port, &["ls"]);
+        assert!(out.status.success(), "ls should succeed");
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert!(s.contains("a.yaml"), "stdout: {}", s);
+        assert!(s.contains("b.yaml"), "stdout: {}", s);
+        assert!(s.contains("c.yaml"), "stdout: {}", s);
 
         stop_server(&mut server);
     }
@@ -738,10 +785,7 @@ mod watcher_tests {
             "sub/deep/foo.rs should be recorded with relative path"
         );
 
-        let ls_output = ftm_client(port)
-            .arg("ls")
-            .output()
-            .expect("failed to run ftm ls");
+        let ls_output = run_ftm_with_port(port, &["ls"]);
         assert!(ls_output.status.success(), "ls should succeed");
         let ls_stdout = String::from_utf8_lossy(&ls_output.stdout);
         assert!(
@@ -1153,11 +1197,9 @@ mod history_tests {
     fn test_history_not_checked_out() {
         let (mut server, port) = start_server();
 
-        ftm_client(port)
-            .args(["history", "test.rs"])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("No directory checked out"));
+        let out = run_ftm_with_port(port, &["history", "test.rs"]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("No directory checked out"));
 
         stop_server(&mut server);
     }
@@ -1167,11 +1209,9 @@ mod history_tests {
         let dir = setup_test_dir();
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm_client(port)
-            .args(["history", "nonexistent.rs"])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("No history for"));
+        let out = run_ftm_with_port(port, &["history", "nonexistent.rs"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("No history for"));
 
         stop_server(&mut server);
     }
@@ -1258,7 +1298,7 @@ mod history_ops_tests {
             "Create should be recorded"
         );
 
-        let ls_default = ftm_client(port).arg("ls").output().expect("ftm ls");
+        let ls_default = run_ftm_with_port(port, &["ls"]);
         assert!(ls_default.status.success(), "ftm ls should succeed");
         let ls_stdout = String::from_utf8_lossy(&ls_default.stdout);
         assert!(
@@ -1273,7 +1313,7 @@ mod history_ops_tests {
             "Delete event should be recorded"
         );
 
-        let ls_after_delete = ftm_client(port).arg("ls").output().expect("ftm ls");
+        let ls_after_delete = run_ftm_with_port(port, &["ls"]);
         assert!(ls_after_delete.status.success(), "ftm ls should succeed");
         let ls_stdout = String::from_utf8_lossy(&ls_after_delete.stdout);
         assert!(
@@ -1282,10 +1322,7 @@ mod history_ops_tests {
             ls_stdout
         );
 
-        let ls_include_deleted = ftm_client(port)
-            .args(["ls", "--include-deleted"])
-            .output()
-            .expect("ftm ls --include-deleted");
+        let ls_include_deleted = run_ftm_with_port(port, &["ls", "--include-deleted"]);
         assert!(
             ls_include_deleted.status.success(),
             "ftm ls --include-deleted should succeed"
@@ -1380,11 +1417,9 @@ mod restore_tests {
     fn test_restore_not_checked_out() {
         let (mut server, port) = start_server();
 
-        ftm_client(port)
-            .args(["restore", "test.rs", "abc12345"])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("No directory checked out"));
+        let out = run_ftm_with_port(port, &["restore", "test.rs", "abc12345"]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("No directory checked out"));
 
         stop_server(&mut server);
     }
@@ -1394,11 +1429,9 @@ mod restore_tests {
         let dir = setup_test_dir();
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm_client(port)
-            .args(["restore", "test.rs", "abc12345"])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("Version not found"));
+        let out = run_ftm_with_port(port, &["restore", "test.rs", "abc12345"]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("Version not found"));
 
         stop_server(&mut server);
     }
@@ -1434,10 +1467,12 @@ mod restore_tests {
         assert_eq!(current, v2_content, "File should currently be v2");
 
         // Restore v1 via server
-        ftm_client(port)
-            .args(["restore", "roundtrip.yaml", v1_checksum])
-            .assert()
-            .success();
+        let out = run_ftm_with_port(port, &["restore", "roundtrip.yaml", v1_checksum]);
+        assert!(
+            out.status.success(),
+            "restore: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         // Verify content is back to v1
         let restored = std::fs::read_to_string(&file_path).unwrap();
@@ -1473,10 +1508,12 @@ mod restore_tests {
         let short_prefix = &full_checksum[..8];
 
         // Restore using only the first 8 chars of the checksum
-        ftm_client(port)
-            .args(["restore", "prefix.yaml", short_prefix])
-            .assert()
-            .success();
+        let out = run_ftm_with_port(port, &["restore", "prefix.yaml", short_prefix]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         let restored = std::fs::read_to_string(&file_path).unwrap();
         assert_eq!(
@@ -1515,10 +1552,12 @@ mod restore_tests {
         let checksum = entry.checksum.as_ref().unwrap().clone();
 
         // Restore the deleted file via server (watcher will pick this up)
-        ftm_client(port)
-            .args(["restore", "willdelete.yaml", &checksum])
-            .assert()
-            .success();
+        let out = run_ftm_with_port(port, &["restore", "willdelete.yaml", &checksum]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         assert!(file_path.exists(), "File should be restored after deletion");
         let restored = std::fs::read_to_string(&file_path).unwrap();
@@ -1590,10 +1629,12 @@ mod restore_tests {
         assert!(!file_path.exists());
 
         // Restore should recreate parent directories automatically
-        ftm_client(port)
-            .args(["restore", "nested/dir/deep.yaml", checksum])
-            .assert()
-            .success();
+        let out = run_ftm_with_port(port, &["restore", "nested/dir/deep.yaml", checksum]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         assert!(
             file_path.exists(),
@@ -1682,11 +1723,9 @@ mod scan_tests {
     fn test_scan_not_checked_out() {
         let (mut server, port) = start_server();
 
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("No directory checked out"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("No directory checked out"));
 
         stop_server(&mut server);
     }
@@ -1701,13 +1740,12 @@ mod scan_tests {
 
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("2 created"))
-            .stdout(predicate::str::contains("0 modified"))
-            .stdout(predicate::str::contains("0 deleted"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert!(s.contains("2 created"));
+        assert!(s.contains("0 modified"));
+        assert!(s.contains("0 deleted"));
 
         let index = load_test_index(dir.path());
         let entries: Vec<_> = index.history.iter().collect();
@@ -1729,11 +1767,9 @@ mod scan_tests {
         let (mut server, port) = start_server_and_checkout(dir.path());
 
         // First scan: creates baseline
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("1 created"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 created"));
 
         // Modify the file (watcher will also detect this, but we verify final state)
         std::fs::write(dir.path().join("app.rs"), "fn main() { println!(\"hi\"); }").unwrap();
@@ -1767,11 +1803,9 @@ mod scan_tests {
         let (mut server, port) = start_server_and_checkout(dir.path());
 
         // Scan to create baseline
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("1 created"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 created"));
 
         // Delete the file (watcher will also detect this)
         std::fs::remove_file(dir.path().join("temp.txt")).unwrap();
@@ -1805,21 +1839,18 @@ mod scan_tests {
         let (mut server, port) = start_server_and_checkout(dir.path());
 
         // First scan
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("1 created"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 created"));
 
         // Second scan - nothing changed
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("0 created"))
-            .stdout(predicate::str::contains("0 modified"))
-            .stdout(predicate::str::contains("0 deleted"))
-            .stdout(predicate::str::contains("1 unchanged"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert!(s.contains("0 created"));
+        assert!(s.contains("0 modified"));
+        assert!(s.contains("0 deleted"));
+        assert!(s.contains("1 unchanged"));
 
         // Index should still only have 1 entry
         let index = load_test_index(dir.path());
@@ -1844,11 +1875,9 @@ mod scan_tests {
 
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("1 created"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 created"));
 
         let index = load_test_index(dir.path());
         assert_eq!(
@@ -1874,11 +1903,9 @@ mod scan_tests {
 
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("1 created"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 created"));
 
         let index = load_test_index(dir.path());
         assert_eq!(index.history.len(), 1);
@@ -1899,11 +1926,9 @@ mod scan_tests {
 
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("2 created"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("2 created"));
 
         let index = load_test_index(dir.path());
         assert!(index.history.iter().any(|e| e.file == "src/lib/mod.rs"));
@@ -1930,11 +1955,9 @@ mod scan_tests {
 
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("1 created"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 created"));
 
         let index = load_test_index(dir.path());
         assert_eq!(index.history.len(), 1);
@@ -1953,11 +1976,9 @@ mod scan_tests {
 
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("1 created"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 created"));
 
         let index = load_test_index(dir.path());
         assert_eq!(index.history.len(), 1);
@@ -1977,11 +1998,9 @@ mod scan_tests {
 
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("2 created"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("2 created"));
 
         // Both entries should share the same snapshot
         let snap_count = count_snapshot_files(dir.path());
@@ -2013,24 +2032,22 @@ mod version_tests {
     #[test]
     fn test_version_without_server() {
         // version should still print client version even when no server is running
-        ftm_client(19999)
-            .arg("version")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("Client version:"))
-            .stdout(predicate::str::contains("not running"));
+        let out = run_ftm_with_port(19999, &["version"]);
+        assert!(out.status.success());
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert!(s.contains("Client version:"));
+        assert!(s.contains("not running"));
     }
 
     #[test]
     fn test_version_with_server() {
         let (mut server, port) = start_server();
 
-        ftm_client(port)
-            .arg("version")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("Client version:"))
-            .stdout(predicate::str::contains("Server version:"));
+        let out = run_ftm_with_port(port, &["version"]);
+        assert!(out.status.success());
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert!(s.contains("Client version:"));
+        assert!(s.contains("Server version:"));
 
         stop_server(&mut server);
     }
@@ -2048,12 +2065,11 @@ mod config_tests {
         let dir = setup_test_dir();
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm_client(port)
-            .args(["config", "get"])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("max_history"))
-            .stdout(predicate::str::contains("patterns"));
+        let out = run_ftm_with_port(port, &["config", "get"]);
+        assert!(out.status.success());
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert!(s.contains("max_history"));
+        assert!(s.contains("patterns"));
 
         stop_server(&mut server);
     }
@@ -2063,11 +2079,9 @@ mod config_tests {
         let dir = setup_test_dir();
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm_client(port)
-            .args(["config", "get", "settings.max_history"])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("100"));
+        let out = run_ftm_with_port(port, &["config", "get", "settings.max_history"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("100"));
 
         stop_server(&mut server);
     }
@@ -2077,11 +2091,9 @@ mod config_tests {
         let dir = setup_test_dir();
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm_client(port)
-            .args(["config", "get", "nonexistent.key"])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("Unknown config key"));
+        let out = run_ftm_with_port(port, &["config", "get", "nonexistent.key"]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("Unknown config key"));
 
         stop_server(&mut server);
     }
@@ -2092,18 +2104,14 @@ mod config_tests {
         let (mut server, port) = start_server_and_checkout(dir.path());
 
         // Set max_history to 200
-        ftm_client(port)
-            .args(["config", "set", "settings.max_history", "200"])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("Set settings.max_history = 200"));
+        let out = run_ftm_with_port(port, &["config", "set", "settings.max_history", "200"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("Set settings.max_history = 200"));
 
         // Verify it was changed
-        ftm_client(port)
-            .args(["config", "get", "settings.max_history"])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("200"));
+        let out = run_ftm_with_port(port, &["config", "get", "settings.max_history"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("200"));
 
         // Verify persisted to config.yaml
         let config_content = std::fs::read_to_string(dir.path().join(".ftm/config.yaml")).unwrap();
@@ -2118,11 +2126,12 @@ mod config_tests {
         let (mut server, port) = start_server_and_checkout(dir.path());
 
         // max_history expects a number
-        ftm_client(port)
-            .args(["config", "set", "settings.max_history", "not_a_number"])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("Invalid value"));
+        let out = run_ftm_with_port(
+            port,
+            &["config", "set", "settings.max_history", "not_a_number"],
+        );
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("Invalid value"));
 
         stop_server(&mut server);
     }
@@ -2132,18 +2141,15 @@ mod config_tests {
         let dir = setup_test_dir();
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm_client(port)
-            .args(["config", "set", "watch.patterns", "*.rs,*.go,*.py"])
-            .assert()
-            .success();
+        let out = run_ftm_with_port(port, &["config", "set", "watch.patterns", "*.rs,*.go,*.py"]);
+        assert!(out.status.success());
 
-        ftm_client(port)
-            .args(["config", "get", "watch.patterns"])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("*.rs"))
-            .stdout(predicate::str::contains("*.go"))
-            .stdout(predicate::str::contains("*.py"));
+        let out = run_ftm_with_port(port, &["config", "get", "watch.patterns"]);
+        assert!(out.status.success());
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert!(s.contains("*.rs"));
+        assert!(s.contains("*.go"));
+        assert!(s.contains("*.py"));
 
         stop_server(&mut server);
     }
@@ -2152,11 +2158,9 @@ mod config_tests {
     fn test_config_not_checked_out() {
         let (mut server, port) = start_server();
 
-        ftm_client(port)
-            .args(["config", "get"])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("No directory checked out"));
+        let out = run_ftm_with_port(port, &["config", "get"]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("No directory checked out"));
 
         stop_server(&mut server);
     }
@@ -2178,10 +2182,11 @@ mod config_hot_reload_tests {
 
         // Default patterns do NOT include *.go
         // Add *.go via config set
-        ftm_client(port)
-            .args(["config", "set", "watch.patterns", "*.rs,*.go,*.yaml"])
-            .assert()
-            .success();
+        let out = run_ftm_with_port(
+            port,
+            &["config", "set", "watch.patterns", "*.rs,*.go,*.yaml"],
+        );
+        assert!(out.status.success());
 
         // Write a .go file — should now be tracked
         std::fs::write(dir.path().join("main.go"), "package main").unwrap();
@@ -2209,10 +2214,8 @@ mod config_hot_reload_tests {
         );
 
         // Remove *.yaml from patterns (keep only *.rs)
-        ftm_client(port)
-            .args(["config", "set", "watch.patterns", "*.rs"])
-            .assert()
-            .success();
+        let out = run_ftm_with_port(port, &["config", "set", "watch.patterns", "*.rs"]);
+        assert!(out.status.success());
 
         // Write a .yaml file — should NOT be tracked anymore
         std::fs::write(dir.path().join("after.yaml"), "after: change").unwrap();
@@ -2244,24 +2247,18 @@ mod config_hot_reload_tests {
         let (mut server, port) = start_server_and_checkout(dir.path());
 
         // Default scan should NOT pick up .go files
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("0 created"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("0 created"));
 
         // Add *.go to patterns
-        ftm_client(port)
-            .args(["config", "set", "watch.patterns", "*.rs,*.go"])
-            .assert()
-            .success();
+        let out = run_ftm_with_port(port, &["config", "set", "watch.patterns", "*.rs,*.go"]);
+        assert!(out.status.success());
 
         // Scan again — should now find the .go file
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("1 created"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 created"));
 
         let index = load_test_index(dir.path());
         assert!(
@@ -2299,10 +2296,8 @@ mod config_hot_reload_tests {
         );
 
         // Enable periodic scanning with 1s interval (server re-checks config every 2s when disabled)
-        ftm_client(port)
-            .args(["config", "set", "settings.scan_interval", "1"])
-            .assert()
-            .success();
+        let out = run_ftm_with_port(port, &["config", "set", "settings.scan_interval", "1"]);
+        assert!(out.status.success());
 
         // Wait for the periodic scanner to fire (up to 6s: 2s re-check + 1s interval + buffer)
         let found = wait_for_index(dir.path(), "pre_existing.txt", 1, 6000);
@@ -2328,24 +2323,18 @@ mod config_hot_reload_tests {
         let (mut server, port) = start_server_and_checkout(dir.path());
 
         // Scan — file exceeds 100 bytes, should be skipped
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("0 created"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("0 created"));
 
         // Raise max_file_size to 1000
-        ftm_client(port)
-            .args(["config", "set", "settings.max_file_size", "1000"])
-            .assert()
-            .success();
+        let out = run_ftm_with_port(port, &["config", "set", "settings.max_file_size", "1000"]);
+        assert!(out.status.success());
 
         // Scan again — file should now be picked up
-        ftm_client(port)
-            .arg("scan")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("1 created"));
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 created"));
 
         let index = load_test_index(dir.path());
         assert!(
@@ -2362,11 +2351,9 @@ mod config_hot_reload_tests {
         let dir = setup_test_dir();
         let (mut server, port) = start_server_and_checkout(dir.path());
 
-        ftm_client(port)
-            .args(["config", "set", "settings.web_port", "9999"])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("restart"));
+        let out = run_ftm_with_port(port, &["config", "set", "settings.web_port", "9999"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("restart"));
 
         stop_server(&mut server);
     }
@@ -2389,15 +2376,16 @@ mod config_hot_reload_tests {
         );
 
         // Add **/custom/** to exclude patterns
-        ftm_client(port)
-            .args([
+        let out = run_ftm_with_port(
+            port,
+            &[
                 "config",
                 "set",
                 "watch.exclude",
                 "**/target/**,**/node_modules/**,**/.git/**,**/.ftm/**,**/custom/**",
-            ])
-            .assert()
-            .success();
+            ],
+        );
+        assert!(out.status.success());
 
         // Write a new file in custom/ — should NOT be tracked
         std::fs::write(custom_dir.join("after.yaml"), "tracked: no").unwrap();
@@ -2433,11 +2421,9 @@ mod logs_tests {
 
         // The server auto-creates a log file on startup, so "logs" should
         // find it and print "Opening: ..." instead of "No log files".
-        ftm_client(port)
-            .arg("logs")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("Opening:"));
+        let out = run_ftm_with_port(port, &["logs"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("Opening:"));
 
         stop_server(&mut server);
     }
@@ -2458,11 +2444,9 @@ mod logs_tests {
         .unwrap();
 
         // logs command should find the file and try less, then fallback to print
-        ftm_client(port)
-            .arg("logs")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("30000101-120000.log"));
+        let out = run_ftm_with_port(port, &["logs"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("30000101-120000.log"));
 
         stop_server(&mut server);
     }
@@ -2480,11 +2464,9 @@ mod logs_tests {
         std::fs::write(log_dir.join("30000201-150000.log"), "new log\n").unwrap();
 
         // Should pick the newest one (30000201-150000.log)
-        ftm_client(port)
-            .arg("logs")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("30000201-150000.log"));
+        let out = run_ftm_with_port(port, &["logs"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("30000201-150000.log"));
 
         stop_server(&mut server);
     }
@@ -2493,11 +2475,9 @@ mod logs_tests {
     fn test_logs_not_checked_out() {
         let (mut server, port) = start_server();
 
-        ftm_client(port)
-            .arg("logs")
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("No directory checked out"));
+        let out = run_ftm_with_port(port, &["logs"]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("No directory checked out"));
 
         stop_server(&mut server);
     }
@@ -2516,7 +2496,12 @@ mod watchdog_tests {
         let (mut server, port) = start_server_and_checkout(dir.path());
 
         // Verify server is healthy
-        ftm_client(port).args(["ls"]).assert().success();
+        let out = run_ftm_with_port(port, &["ls"]);
+        assert!(
+            out.status.success(),
+            "ls: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         // Delete the entire .ftm directory
         let ftm_dir = dir.path().join(".ftm");

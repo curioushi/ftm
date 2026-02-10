@@ -1,5 +1,6 @@
 mod client;
 mod config;
+mod path_util;
 mod scanner;
 mod server;
 mod storage;
@@ -122,6 +123,8 @@ fn main() -> Result<()> {
 
             // Kill all ftm server processes, then start a fresh one.
             kill_all_servers(None);
+            #[cfg(windows)]
+            std::thread::sleep(std::time::Duration::from_millis(50)); // Let OS release the port
             auto_start_server(cli.port, &abs_dir)?;
 
             client::client_checkout(cli.port, &abs_dir.to_string_lossy())?;

@@ -1,3 +1,4 @@
+use crate::path_util;
 use crate::types::{FileTreeNode, HistoryEntry, Index, Operation};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -159,7 +160,7 @@ impl Storage {
         view: &mut IndexView,
     ) -> Result<Option<HistoryEntry>> {
         let rel_path = file_path.strip_prefix(root_dir).unwrap_or(file_path);
-        let file_key = rel_path.to_string_lossy().to_string();
+        let file_key = path_util::normalize_rel_path(&rel_path.to_string_lossy());
 
         let tmp_dir = self.snapshots_dir().join(".tmp");
         std::fs::create_dir_all(&tmp_dir)?;
@@ -224,7 +225,7 @@ impl Storage {
         view: &mut IndexView,
     ) -> Result<Option<HistoryEntry>> {
         let rel_path = file_path.strip_prefix(root_dir).unwrap_or(file_path);
-        let file_key = rel_path.to_string_lossy().to_string();
+        let file_key = path_util::normalize_rel_path(&rel_path.to_string_lossy());
 
         if !view.last_by_file.contains_key(&file_key) {
             return Ok(None);
@@ -495,13 +496,14 @@ impl Storage {
 
     pub fn restore(&self, file_path: &str, checksum_prefix: &str, root_dir: &Path) -> Result<()> {
         let index = self.load_index()?;
+        let file_path_norm = path_util::normalize_rel_path(file_path);
 
-        // Find entry matching the checksum prefix
+        // Find entry matching the checksum prefix (compare normalized paths for Windows compatibility)
         let entry = index
             .history
             .iter()
             .find(|e| {
-                e.file == file_path
+                path_util::normalize_rel_path(&e.file) == file_path_norm
                     && e.checksum
                         .as_ref()
                         .map(|c| c.starts_with(checksum_prefix))

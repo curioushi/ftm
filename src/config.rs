@@ -1,3 +1,4 @@
+use crate::path_util;
 use anyhow::Result;
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
@@ -87,9 +88,9 @@ impl Config {
     /// `path` should be an absolute path, `root_dir` is the project root.
     pub fn matches_path(&self, path: &Path, root_dir: &Path) -> bool {
         let rel_path = path.strip_prefix(root_dir).unwrap_or(path);
-        let path_str = rel_path.to_string_lossy();
+        let path_str = path_util::normalize_rel_path(&rel_path.to_string_lossy());
 
-        // Check exclude patterns
+        // Check exclude patterns (glob expects forward slashes)
         for pattern in &self.watch.exclude {
             if let Ok(p) = Pattern::new(pattern) {
                 if p.matches(&path_str) {
