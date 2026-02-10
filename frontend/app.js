@@ -673,8 +673,15 @@
       byFile.get(e.file).push(e);
     }
 
-    // Sort files alphabetically
-    const sortedFiles = Array.from(byFile.keys()).sort();
+    // Sort files by latest modification time (newest first); tie-break by path
+    const sortedFiles = Array.from(byFile.keys()).sort((a, b) => {
+      const entriesA = byFile.get(a);
+      const entriesB = byFile.get(b);
+      const maxTsA = Math.max(...entriesA.map((e) => new Date(e.timestamp).getTime()));
+      const maxTsB = Math.max(...entriesB.map((e) => new Date(e.timestamp).getTime()));
+      if (maxTsB !== maxTsA) return maxTsB - maxTsA;
+      return (a || '').localeCompare(b || '', undefined, { sensitivity: 'base' });
+    });
     tlLanes = sortedFiles.map((f) => ({ file: f, entries: byFile.get(f) }));
     tlScrollY = 0;
     tlActiveNode = null;
