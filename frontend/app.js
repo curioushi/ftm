@@ -277,11 +277,9 @@
           renderFileList();
         });
 
-        // Dir name click: select all files under this directory
-        nameSpan.addEventListener('click', (e) => {
-          e.stopPropagation();
+        // Row click (name or blank area): select all files under this directory
+        function onDirRowClick(e) {
           clearTimelineLaneFilter();
-          // Ensure expanded so user can see selected files
           collapsedDirs.delete(fullPath);
           const childFiles = collectFilesUnder(node.children, fullPath);
           if (childFiles.length === 0) return;
@@ -290,7 +288,8 @@
           rememberSelectedFiles(childFiles);
           renderFileList();
           selectMultipleFiles(childFiles);
-        });
+        }
+        dirRow.addEventListener('click', onDirRowClick);
 
         dirRow.appendChild(arrow);
         dirRow.appendChild(nameSpan);
@@ -1289,8 +1288,7 @@
 
     if (!wasDrag) {
       const { x, y } = getCanvasCoords(e);
-      let node = hitTestNode(x, y);
-      if (!node) node = findNodeClosestToTime(x, y);
+      const node = hitTestNode(x, y);
       if (node) {
         onNodeClick(node);
         updateLaneLabels();
