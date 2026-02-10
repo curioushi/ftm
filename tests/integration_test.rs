@@ -2022,6 +2022,77 @@ mod scan_tests {
     }
 }
 
+mod clean_tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_not_checked_out() {
+        let (mut server, port) = start_server();
+
+        let out = run_ftm_with_port(port, &["clean"]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("No directory checked out"));
+
+        stop_server(&mut server);
+    }
+
+    #[test]
+    fn test_clean_removes_orphan_snapshots() {
+        let dir = setup_test_dir();
+        pre_init_ftm(dir.path(), 1, 30 * 1024 * 1024);
+
+        std::fs::write(dir.path().join("clean_orphan.yaml"), "v1").unwrap();
+
+        let (mut server, port) = start_server_and_checkout(dir.path());
+
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 created"));
+
+        std::fs::write(dir.path().join("clean_orphan.yaml"), "v2").unwrap();
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 modified"));
+
+        let index = load_test_index(dir.path());
+        let entries: Vec<_> = index
+            .history
+            .iter()
+            .filter(|e| e.file == "clean_orphan.yaml")
+            .collect();
+        assert_eq!(entries.len(), 1, "max_history=1 should trim to single entry");
+        let snap_before = count_snapshot_files(dir.path());
+        assert_eq!(snap_before, 2, "Two snapshots on disk before clean (v1 orphan + v2)");
+
+        let out = run_ftm_with_port(port, &["clean"]);
+        assert!(out.status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("1 snapshot(s) removed"),
+            "Expected '1 snapshot(s) removed' in: {}",
+            stdout
+        );
+
+        let snap_after = count_snapshot_files(dir.path());
+        assert_eq!(
+            snap_after, 1,
+            "One snapshot should remain after clean, got {}",
+            snap_after
+        );
+
+        let out = run_ftm_with_port(port, &["history", "clean_orphan.yaml"]);
+        assert!(out.status.success());
+        let entry = index.history.iter().find(|e| e.file == "clean_orphan.yaml").unwrap();
+        let checksum = entry.checksum.as_ref().unwrap();
+        let out = run_ftm_with_port(port, &["restore", "clean_orphan.yaml", &checksum[..8]]);
+        assert!(out.status.success());
+        let content = std::fs::read_to_string(dir.path().join("clean_orphan.yaml")).unwrap();
+        assert_eq!(content, "v2", "Restore should yield current version");
+
+        stop_server(&mut server);
+    }
+}
+
 // ===========================================================================
 // Version tests
 // ===========================================================================

@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::scanner::Scanner;
 use crate::storage::Storage;
-use crate::types::{FileTreeNode, HistoryEntry};
+use crate::types::{CleanResult, FileTreeNode, HistoryEntry};
 use crate::watcher::FileWatcher;
 use anyhow::{Context, Result};
 use axum::body::Body;
@@ -590,6 +590,15 @@ async fn scan(State(state): State<SharedState>) -> Result<impl IntoResponse, Api
     Ok(Json(result))
 }
 
+async fn clean_handler(State(state): State<SharedState>) -> Result<Json<CleanResult>, ApiError> {
+    let (storage, _) = state.storage().await.ok_or_else(not_checked_out)?;
+    let result = tokio::task::spawn_blocking(move || storage.clean_orphan_snapshots())
+        .await
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(result))
+}
+
 async fn version_handler() -> impl IntoResponse {
     Json(VersionResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -728,6 +737,7 @@ pub async fn serve(port: u16) -> Result<()> {
         .route("/api/activity", get(activity))
         .route("/api/restore", post(restore))
         .route("/api/scan", post(scan))
+        .route("/api/clean", post(clean_handler))
         .route("/api/config", get(config_get).post(config_set))
         .route("/api/logs", get(logs_handler))
         .route("/api/snapshot", get(snapshot_handler))

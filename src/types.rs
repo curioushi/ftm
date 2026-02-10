@@ -35,6 +35,13 @@ pub struct Index {
     pub history: Vec<HistoryEntry>,
 }
 
+/// Result of clean_orphan_snapshots: counts of removed files and bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CleanResult {
+    pub files_removed: usize,
+    pub bytes_removed: u64,
+}
+
 /// Tree node for structured file listing (ls). Directories have children; files have count.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileTreeNode {

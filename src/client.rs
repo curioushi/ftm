@@ -44,6 +44,12 @@ pub struct ScanResult {
     pub unchanged: usize,
 }
 
+#[derive(Deserialize)]
+struct CleanResult {
+    files_removed: usize,
+    bytes_removed: u64,
+}
+
 #[derive(Serialize)]
 struct CheckoutRequest {
     directory: String,
@@ -297,6 +303,36 @@ pub fn client_scan(port: u16) -> Result<()> {
     println!(
         "Scan complete: {} created, {} modified, {} deleted, {} unchanged",
         result.created, result.modified, result.deleted, result.unchanged
+    );
+    Ok(())
+}
+
+fn format_bytes(n: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if n >= GB {
+        format!("{:.1} GB", n as f64 / GB as f64)
+    } else if n >= MB {
+        format!("{:.1} MB", n as f64 / MB as f64)
+    } else if n >= KB {
+        format!("{:.1} KB", n as f64 / KB as f64)
+    } else {
+        format!("{} bytes", n)
+    }
+}
+
+pub fn client_clean(port: u16) -> Result<()> {
+    let resp = make_client()
+        .post(format!("{}/api/clean", base_url(port)))
+        .send()
+        .map_err(handle_connection_error)?;
+    let resp = check_response(resp)?;
+    let result: CleanResult = resp.json().context("Failed to parse response")?;
+    println!(
+        "Clean complete: {} snapshot(s) removed, {} freed",
+        result.files_removed,
+        format_bytes(result.bytes_removed)
     );
     Ok(())
 }

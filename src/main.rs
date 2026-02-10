@@ -39,6 +39,8 @@ enum Commands {
     },
     /// Scan directory for changes (detect creates, modifies, deletes)
     Scan,
+    /// Remove snapshot files not referenced by any history entry
+    Clean,
     /// Show version history for a file
     History { file: String },
     /// Restore a file to a specific version
@@ -135,6 +137,7 @@ fn main() -> Result<()> {
         Commands::History { file } => client::client_history(cli.port, &file),
         Commands::Restore { file, checksum } => client::client_restore(cli.port, &file, &checksum),
         Commands::Scan => client::client_scan(cli.port),
+        Commands::Clean => client::client_clean(cli.port),
         Commands::Config { action } => match action {
             ConfigAction::Get { key } => client::client_config_get(cli.port, key.as_deref()),
             ConfigAction::Set { key, value } => client::client_config_set(cli.port, &key, &value),

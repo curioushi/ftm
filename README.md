@@ -78,6 +78,7 @@ FTM follows a client-server architecture. Running `ftm checkout` automatically s
 | `ftm history <file>` | Show version history for a file |
 | `ftm restore <file> <checksum>` | Restore a file to a specific version |
 | `ftm scan` | Trigger a full manual scan |
+| `ftm clean` | Remove snapshot files not referenced by any history entry, free disk space |
 | `ftm config get [key]` | Show configuration (all or by key) |
 | `ftm config set <key> <value>` | Update a configuration value |
 | `ftm version` | Print client and server version |

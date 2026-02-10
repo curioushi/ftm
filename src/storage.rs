@@ -1,9 +1,9 @@
 use crate::path_util;
-use crate::types::{FileTreeNode, HistoryEntry, Index, Operation};
+use crate::types::{CleanResult, FileTreeNode, HistoryEntry, Index, Operation};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
@@ -365,6 +365,69 @@ impl Storage {
     #[allow(dead_code)]
     pub fn snapshot_exists(&self, checksum: &str) -> bool {
         self.snapshot_path(checksum).exists()
+    }
+
+    /// Remove snapshot files that are not referenced by any HistoryEntry in the index.
+    /// Returns counts of files and bytes removed. Skips `.tmp/` under snapshots.
+    pub fn clean_orphan_snapshots(&self) -> Result<CleanResult> {
+        let index = self.load_index()?;
+        let referenced: HashSet<String> = index
+            .history
+            .iter()
+            .filter_map(|e| e.checksum.clone())
+            .collect();
+
+        let snap_dir = self.snapshots_dir();
+        if !snap_dir.exists() {
+            return Ok(CleanResult {
+                files_removed: 0,
+                bytes_removed: 0,
+            });
+        }
+
+        let mut files_removed = 0usize;
+        let mut bytes_removed = 0u64;
+        let to_delete = Self::collect_orphan_snapshot_paths(&snap_dir, &referenced)?;
+        for path in to_delete {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                bytes_removed += meta.len();
+            }
+            std::fs::remove_file(&path).context("Failed to remove orphan snapshot")?;
+            files_removed += 1;
+        }
+
+        Ok(CleanResult {
+            files_removed,
+            bytes_removed,
+        })
+    }
+
+    /// Returns true if s is exactly 64 hex chars (SHA-256).
+    fn is_sha256_hex(s: &str) -> bool {
+        s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+    }
+
+    /// Recursively collect paths of snapshot files whose checksum is not in referenced. Skips .tmp.
+    fn collect_orphan_snapshot_paths(
+        dir: &Path,
+        referenced: &HashSet<String>,
+    ) -> Result<Vec<PathBuf>> {
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(dir).context("Failed to read snapshots directory")? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().map(|n| n == ".tmp").unwrap_or(false) {
+                    continue;
+                }
+                out.extend(Self::collect_orphan_snapshot_paths(&path, referenced)?);
+            } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if Self::is_sha256_hex(name) && !referenced.contains(name) {
+                    out.push(path);
+                }
+            }
+        }
+        Ok(out)
     }
 
     pub fn list_history(&self, file_path: &str) -> Result<Vec<HistoryEntry>> {
