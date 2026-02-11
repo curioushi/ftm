@@ -22,6 +22,7 @@
   let isMouseOverTimeline = false; // track if mouse is over the timeline area
   const SELECTED_FILE_STORAGE_KEY = 'ftm-selected-file';
   const SELECTED_FILES_STORAGE_KEY = 'ftm-selected-files';
+  const TIMELINE_RANGE_STORAGE_KEY = 'ftm-timeline-range';
   const TL_HEIGHT_STORAGE_KEY = 'ftm-timeline-height';
   const TL_LANES_WIDTH_STORAGE_KEY = 'ftm-tl-lanes-width';
   const TREE_DEPTH_STORAGE_KEY = 'ftm-tree-depth';
@@ -1581,6 +1582,7 @@
   // ---- Range buttons --------------------------------------------------------
   function clearActiveRangeBtn() {
     if (tlActiveRangeBtn) {
+      localStorage.removeItem(TIMELINE_RANGE_STORAGE_KEY);
       tlActiveRangeBtn.classList.remove('active');
       tlActiveRangeBtn = null;
     }
@@ -1647,6 +1649,7 @@
         updateTimelineLabel();
         updateLaneLabels();
         requestTimelineDraw();
+        localStorage.setItem(TIMELINE_RANGE_STORAGE_KEY, range);
         return;
       }
 
@@ -1661,6 +1664,7 @@
       }
 
       setTimelineMultiFile(entries, since, until);
+      localStorage.setItem(TIMELINE_RANGE_STORAGE_KEY, range);
       if (tlLanes.length > 0) {
         currentFile = tlLanes[0].file;
         renderFileList();
@@ -2581,6 +2585,11 @@
           await selectFile(storedPaths[0]);
         } else {
           requestTimelineDraw();
+        }
+        const savedRange = localStorage.getItem(TIMELINE_RANGE_STORAGE_KEY);
+        if (savedRange) {
+          const rangeBtn = document.querySelector('.tl-range-btn[data-range="' + savedRange + '"]');
+          if (rangeBtn) await onRangeButtonClick(rangeBtn);
         }
       } else {
         $status.textContent = t('status.noCheckout');
