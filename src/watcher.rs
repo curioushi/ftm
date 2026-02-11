@@ -87,11 +87,11 @@ impl FileWatcher {
             }
 
             // Perform a full directory scan to detect creates, modifies, and deletes
-            let (cfg, max_history, max_quota) = {
+            let cfg = {
                 let c = self.config.read().unwrap();
-                (c.clone(), c.settings.max_history, c.settings.max_quota)
+                c.clone()
             };
-            let storage = Storage::new(ftm_dir.clone(), max_history, max_quota);
+            let storage = Storage::for_settings(ftm_dir.clone(), &cfg.settings);
             match Scanner::new(self.root_dir.clone(), cfg, storage).scan() {
                 Ok(r) => {
                     info!(

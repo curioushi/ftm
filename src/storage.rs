@@ -63,6 +63,11 @@ impl Storage {
         }
     }
 
+    /// Build from current settings (single source for ftm_dir + config).
+    pub fn for_settings(ftm_dir: PathBuf, settings: &crate::config::Settings) -> Self {
+        Self::new(ftm_dir, settings.max_history, settings.max_quota)
+    }
+
     fn index_path(&self) -> PathBuf {
         self.ftm_dir.join("index.json")
     }

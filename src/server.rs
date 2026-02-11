@@ -55,7 +55,7 @@ impl AppState {
         guard.as_ref().map(|c| {
             let ftm_dir = c.watch_dir.join(".ftm");
             let settings = &c.config.read().unwrap().settings;
-            let storage = Storage::new(ftm_dir, settings.max_history, settings.max_quota);
+            let storage = Storage::for_settings(ftm_dir, settings);
             (storage, c.watch_dir.clone())
         })
     }
@@ -364,14 +364,9 @@ async fn checkout(
         tokio::spawn(async move {
             let mut last_scan = tokio::time::Instant::now();
             loop {
-                let (scan_interval, cfg_snapshot, max_history, max_quota) = {
+                let (scan_interval, cfg_snapshot) = {
                     let cfg = scan_config.read().unwrap();
-                    (
-                        cfg.settings.scan_interval,
-                        cfg.clone(),
-                        cfg.settings.max_history,
-                        cfg.settings.max_quota,
-                    )
+                    (cfg.settings.scan_interval, cfg.clone())
                 };
 
                 let elapsed = last_scan.elapsed().as_secs();
@@ -391,7 +386,7 @@ async fn checkout(
                 let cfg = cfg_snapshot;
                 let fd = scan_ftm_dir.clone();
                 match tokio::task::spawn_blocking(move || {
-                    let storage = Storage::new(fd, max_history, max_quota);
+                    let storage = Storage::for_settings(fd, &cfg.settings);
                     Scanner::new(wd, cfg, storage).scan()
                 })
                 .await
@@ -424,18 +419,14 @@ async fn checkout(
             if !once_scan_ftm_dir.exists() {
                 return;
             }
-            let (cfg_snapshot, max_history, max_quota) = {
+            let cfg_snapshot = {
                 let cfg = once_scan_config.read().unwrap();
-                (
-                    cfg.clone(),
-                    cfg.settings.max_history,
-                    cfg.settings.max_quota,
-                )
+                cfg.clone()
             };
             let wd = once_scan_watch_dir.clone();
             let fd = once_scan_ftm_dir.clone();
             match tokio::task::spawn_blocking(move || {
-                let storage = Storage::new(fd, max_history, max_quota);
+                let storage = Storage::for_settings(fd, &cfg_snapshot.settings);
                 Scanner::new(wd, cfg_snapshot, storage).scan()
             })
             .await
@@ -463,13 +454,9 @@ async fn checkout(
         tokio::spawn(async move {
             let mut last_clean = tokio::time::Instant::now();
             loop {
-                let (clean_interval, max_history, max_quota) = {
+                let (clean_interval, settings) = {
                     let cfg = clean_config.read().unwrap();
-                    (
-                        cfg.settings.clean_interval,
-                        cfg.settings.max_history,
-                        cfg.settings.max_quota,
-                    )
+                    (cfg.settings.clean_interval, cfg.settings.clone())
                 };
 
                 let elapsed = last_clean.elapsed().as_secs();
@@ -487,7 +474,7 @@ async fn checkout(
                 last_clean = tokio::time::Instant::now();
                 let fd = clean_ftm_dir.clone();
                 match tokio::task::spawn_blocking(move || {
-                    let storage = Storage::new(fd, max_history, max_quota);
+                    let storage = Storage::for_settings(fd, &settings);
                     storage.clean()
                 })
                 .await
