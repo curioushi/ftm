@@ -2558,6 +2558,7 @@
     // Show modal
     $restoreOverlay.setAttribute('aria-hidden', 'false');
     $restoreConfirm.disabled = false;
+    $restoreCancel.disabled = false;
     $restoreConfirm.focus();
 
     // Fetch diff: from=current, to=restore target
@@ -2823,6 +2824,54 @@
     tbody.appendChild(frag);
   }
 
+  const REFRESH_AFTER_RESTORE_TIMEOUT_MS = 1000;
+  const REFRESH_AFTER_RESTORE_POLL_MS = 300;
+
+  async function refreshAfterRestore() {
+    if (!currentFile) return;
+    const deadline = Date.now() + REFRESH_AFTER_RESTORE_TIMEOUT_MS;
+    const prevLen = historyEntries.length;
+    while (Date.now() < deadline) {
+      try {
+        const entries = await apiJson('/api/history?file=' + encodeURIComponent(currentFile));
+        if (entries.length > prevLen) break;
+      } catch {
+        // ignore poll errors
+      }
+      await new Promise(function (r) {
+        setTimeout(r, REFRESH_AFTER_RESTORE_POLL_MS);
+      });
+    }
+    try {
+      const hist = await apiJson('/api/history?file=' + encodeURIComponent(currentFile));
+      historyEntries = hist;
+      if (historyEntries.length === 0) {
+        requestTimelineDraw();
+        updateTimelineLabel();
+        updateLaneLabels();
+        return;
+      }
+      // Update lane data in place: keep time scale and file list unchanged
+      const li = tlLanes.findIndex(function (l) {
+        return l.file === currentFile;
+      });
+      if (li >= 0) {
+        tlLanes[li].entries = hist;
+      } else if (tlLanes.length === 1 && tlLanes[0].file === currentFile) {
+        tlLanes[0].entries = hist;
+      } else {
+        tlLanes = hist.length > 0 ? [{ file: currentFile, entries: hist }] : [];
+      }
+      selectEntryDiff(historyEntries.length - 1);
+      ensureActiveNodeInView();
+      updateTimelineLabel();
+      updateLaneLabels();
+      requestTimelineDraw();
+    } catch {
+      // keep current state on error
+    }
+  }
+
   async function executeRestore() {
     if (!currentFile || !selectedRestoreChecksum) return;
     $restoreConfirm.disabled = true;
@@ -2834,9 +2883,7 @@
       });
       $status.textContent = t('status.restoreRequested', { file: currentFile });
       closeRestoreModal();
-      setTimeout(function () {
-        location.reload();
-      }, 200);
+      refreshAfterRestore();
     } catch (e) {
       $status.textContent = e.message;
       $restoreConfirm.disabled = false;
