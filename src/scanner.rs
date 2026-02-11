@@ -46,7 +46,7 @@ impl Scanner {
         // Phase 1: Walk directory and snapshot all matching files
         let mut scanned_files = HashSet::new();
         self.walk_and_snapshot(
-            &self.root_dir.clone(),
+            &self.root_dir,
             &mut scanned_files,
             &mut result,
             &mut index,

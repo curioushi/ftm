@@ -84,8 +84,8 @@ impl Default for Config {
                 max_history: 10_000,
                 max_file_size: 30 * 1024 * 1024, // 30MB
                 max_quota: default_max_quota(),
-                scan_interval: 300,
-                clean_interval: 3600,
+                scan_interval: default_scan_interval(),
+                clean_interval: default_clean_interval(),
             },
             exclude_compiled,
         }
@@ -133,14 +133,8 @@ impl Config {
 
         // Check include patterns
         if let Some(ext) = path.extension() {
-            let ext_pattern = format!("*.{}", ext.to_string_lossy());
-            for pattern in &self.watch.patterns {
-                if pattern == &ext_pattern
-                    || pattern.ends_with(&format!(".{}", ext.to_string_lossy()))
-                {
-                    return true;
-                }
-            }
+            let ext_suffix = format!(".{}", ext.to_string_lossy());
+            return self.watch.patterns.iter().any(|p| p.ends_with(&ext_suffix));
         }
 
         false
@@ -148,17 +142,9 @@ impl Config {
 
     /// Returns true if path_str or (if provided) dir_str matches any compiled exclude pattern.
     pub(crate) fn excluded_by_patterns(&self, path_str: &str, dir_str: Option<&str>) -> bool {
-        for p in &self.exclude_compiled {
-            if p.matches(path_str) {
-                return true;
-            }
-            if let Some(d) = dir_str {
-                if p.matches(d) {
-                    return true;
-                }
-            }
-        }
-        false
+        self.exclude_compiled.iter().any(|p| {
+            p.matches(path_str) || dir_str.is_some_and(|d| p.matches(d))
+        })
     }
 
     /// Get a config value by dot-notation key (e.g. "settings.max_history").

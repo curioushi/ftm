@@ -299,24 +299,18 @@ impl Storage {
         }
         let prefix_with_slash = format!("{}/", rel_prefix_trimmed);
 
-        // Use IndexView for O(1) last-entry lookup instead of O(n) linear scan
         let files_to_delete: Vec<String> = view
             .last_by_file
             .iter()
-            .filter_map(|(file_key, &idx)| {
+            .filter(|(file_key, &idx)| {
                 let file_norm = file_key.replace('\\', "/");
-                if file_norm == rel_prefix_trimmed || file_norm.starts_with(&prefix_with_slash) {
-                    if index
+                (file_norm == rel_prefix_trimmed || file_norm.starts_with(&prefix_with_slash))
+                    && index
                         .history
                         .get(idx)
-                        .map(|e| e.op != Operation::Delete)
-                        .unwrap_or(false)
-                    {
-                        return Some(file_key.clone());
-                    }
-                }
-                None
+                        .is_some_and(|e| e.op != Operation::Delete)
             })
+            .map(|(file_key, _)| file_key.clone())
             .collect();
 
         let count = files_to_delete.len();
@@ -349,14 +343,13 @@ impl Storage {
         for entry in &index.history {
             if let Some(ref c) = entry.checksum {
                 *ref_count.entry(c.clone()).or_default() += 1;
-                if !checksum_size.contains_key(c) {
-                    let size = entry.size.unwrap_or_else(|| {
+                checksum_size.entry(c.clone()).or_insert_with(|| {
+                    entry.size.unwrap_or_else(|| {
                         std::fs::metadata(self.snapshot_path(c))
                             .map(|m| m.len())
                             .unwrap_or(0)
-                    });
-                    checksum_size.insert(c.clone(), size);
-                }
+                    })
+                });
             }
         }
         let mut total_volume: u64 = checksum_size.values().sum();
@@ -385,20 +378,15 @@ impl Storage {
             .iter()
             .filter_map(|e| e.checksum.as_ref().cloned())
             .collect();
+        index.history.drain(0..to_remove);
+
         let mut bytes_freed = 0u64;
         for c in &snapshots_to_delete {
             if ref_count.get(c).copied().unwrap_or(0) == 0 {
                 if let Some(&size) = checksum_size.get(c) {
                     bytes_freed += size;
                 }
-            }
-        }
-        index.history.drain(0..to_remove);
-
-        for c in &snapshots_to_delete {
-            if ref_count.get(c).copied().unwrap_or(0) == 0 {
-                let path = self.snapshot_path(c);
-                let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(self.snapshot_path(c));
             }
         }
 
@@ -413,7 +401,7 @@ impl Storage {
         if entries_trimmed > 0 {
             self.save_index(&index)?;
         }
-        let (files_removed, bytes_removed) = self.clean_orphan_snapshots_inner()?;
+        let (files_removed, bytes_removed) = self.clean_orphan_snapshots_inner(&index)?;
         Ok(CleanResult {
             entries_trimmed,
             bytes_freed_trim,
@@ -428,8 +416,7 @@ impl Storage {
         if !path.exists() {
             anyhow::bail!("Snapshot not found: {}", &checksum[..8.min(checksum.len())]);
         }
-        let content = std::fs::read(&path)?;
-        Ok(content)
+        Ok(std::fs::read(&path)?)
     }
 
     /// Check whether a snapshot file exists for the given checksum.
@@ -440,8 +427,7 @@ impl Storage {
 
     /// Remove snapshot files that are not referenced by any HistoryEntry in the index.
     /// Returns (files_removed, bytes_removed). Skips `.tmp/` under snapshots.
-    fn clean_orphan_snapshots_inner(&self) -> Result<(usize, u64)> {
-        let index = self.load_index()?;
+    fn clean_orphan_snapshots_inner(&self, index: &Index) -> Result<(usize, u64)> {
         let referenced: HashSet<String> = index
             .history
             .iter()
@@ -453,23 +439,21 @@ impl Storage {
             return Ok((0, 0));
         }
 
-        let mut files_removed = 0usize;
-        let mut bytes_removed = 0u64;
         let to_delete = Self::collect_orphan_snapshot_paths(&snap_dir, &referenced)?;
-        for path in to_delete {
-            if let Ok(meta) = std::fs::metadata(&path) {
+        let mut bytes_removed = 0u64;
+        for path in &to_delete {
+            if let Ok(meta) = std::fs::metadata(path) {
                 bytes_removed += meta.len();
             }
-            std::fs::remove_file(&path).context("Failed to remove orphan snapshot")?;
-            files_removed += 1;
+            std::fs::remove_file(path).context("Failed to remove orphan snapshot")?;
         }
 
-        Ok((files_removed, bytes_removed))
+        Ok((to_delete.len(), bytes_removed))
     }
 
     /// Returns true if s is exactly 64 hex chars (SHA-256).
     fn is_sha256_hex(s: &str) -> bool {
-        s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+        s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
     }
 
     /// Recursively collect paths of snapshot files whose checksum is not in referenced. Skips .tmp.
@@ -482,7 +466,7 @@ impl Storage {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
-                if path.file_name().map(|n| n == ".tmp").unwrap_or(false) {
+                if path.file_name().is_some_and(|n| n == ".tmp") {
                     continue;
                 }
                 out.extend(Self::collect_orphan_snapshot_paths(&path, referenced)?);
@@ -525,21 +509,18 @@ impl Storage {
         if !include_deleted {
             entries.retain(|e| {
                 self.get_last_entry_for_file(&index, &e.file)
-                    .map(|last| last.op != Operation::Delete)
-                    .unwrap_or(true)
+                    .is_none_or(|last| last.op != Operation::Delete)
             });
         }
         Ok(entries)
     }
 
     pub fn list_files(&self, include_deleted: bool) -> Result<Vec<(String, usize)>> {
-        use std::collections::HashMap;
-
         let index = self.load_index()?;
         let mut file_counts: HashMap<String, usize> = HashMap::new();
 
         for entry in &index.history {
-            *file_counts.entry(entry.file.clone()).or_insert(0) += 1;
+            *file_counts.entry(entry.file.clone()).or_default() += 1;
         }
 
         let mut files: Vec<(String, usize)> = if include_deleted {
@@ -549,12 +530,11 @@ impl Storage {
                 .into_iter()
                 .filter(|(file, _)| {
                     self.get_last_entry_for_file(&index, file)
-                        .map(|e| e.op != Operation::Delete)
-                        .unwrap_or(true)
+                        .is_none_or(|e| e.op != Operation::Delete)
                 })
                 .collect()
         };
-        files.sort_by(|a, b| a.0.cmp(&b.0));
+        files.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         Ok(files)
     }
 
@@ -634,8 +614,7 @@ impl Storage {
                 path_util::normalize_rel_path(&e.file) == file_path_norm
                     && e.checksum
                         .as_ref()
-                        .map(|c| c.starts_with(checksum_prefix))
-                        .unwrap_or(false)
+                        .is_some_and(|c| c.starts_with(checksum_prefix))
             })
             .context("Version not found in history")?;
 

@@ -225,11 +225,7 @@ fn print_file_tree(nodes: &[FileTreeNode], prefix: &str) {
         } else {
             ("├── ", "│   ")
         };
-        let line_prefix = if prefix.is_empty() {
-            branch.to_string()
-        } else {
-            format!("{}{}", prefix, branch)
-        };
+        let line_prefix = format!("{}{}", prefix, branch);
         match &node.children {
             None => {
                 let count = node.count.unwrap_or(0);
@@ -331,29 +327,25 @@ pub fn client_clean(port: u16) -> Result<()> {
         .map_err(handle_connection_error)?;
     let resp = check_response(resp)?;
     let result: CleanResult = resp.json().context("Failed to parse response")?;
-    if result.entries_trimmed > 0 || result.bytes_freed_trim > 0 {
+    if result.entries_trimmed == 0 && result.files_removed == 0 {
+        println!("Clean complete: nothing to remove");
+        return Ok(());
+    }
+    if result.entries_trimmed > 0 {
         println!(
             "Trim: {} history entries trimmed, {} freed",
             result.entries_trimmed,
             format_bytes(result.bytes_freed_trim)
         );
     }
-    if result.files_removed > 0 || result.bytes_removed > 0 {
+    if result.files_removed > 0 {
         println!(
             "Orphan: {} snapshot(s) removed, {} freed",
             result.files_removed,
             format_bytes(result.bytes_removed)
         );
     }
-    if result.entries_trimmed == 0
-        && result.bytes_freed_trim == 0
-        && result.files_removed == 0
-        && result.bytes_removed == 0
-    {
-        println!("Clean complete: nothing to remove");
-    } else {
-        println!("Clean complete");
-    }
+    println!("Clean complete");
     Ok(())
 }
 

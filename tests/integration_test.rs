@@ -129,6 +129,30 @@ fn stop_server(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
+/// Spawn a thread that drains a pipe into a shared buffer. Returns the buffer.
+fn spawn_pipe_drainer(
+    pipe: Option<impl Read + Send + 'static>,
+) -> std::sync::Arc<std::sync::Mutex<Vec<u8>>> {
+    let collector = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let buf_ref = collector.clone();
+    std::thread::spawn(move || {
+        if let Some(mut pipe) = pipe {
+            let mut buf = [0u8; 4096];
+            loop {
+                match pipe.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Ok(mut v) = buf_ref.lock() {
+                            v.extend_from_slice(&buf[..n]);
+                        }
+                    }
+                }
+            }
+        }
+    });
+    collector
+}
+
 /// Run ftm with given args, draining stdout/stderr in background to avoid pipe deadlock (Windows/Unix).
 fn run_ftm_output(args: &[&str]) -> std::process::Output {
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_ftm"))
@@ -137,44 +161,8 @@ fn run_ftm_output(args: &[&str]) -> std::process::Output {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("failed to spawn ftm");
-    let stdout_handle = child.stdout.take();
-    let stderr_handle = child.stderr.take();
-    let stdout_collector = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-    let stderr_collector = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-    let so = stdout_collector.clone();
-    let se = stderr_collector.clone();
-    std::thread::spawn(move || {
-        if let Some(mut out) = stdout_handle {
-            let mut buf = [0u8; 4096];
-            loop {
-                match std::io::Read::read(&mut out, &mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if let Ok(mut v) = so.lock() {
-                            v.extend_from_slice(&buf[..n]);
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
-    });
-    std::thread::spawn(move || {
-        if let Some(mut err) = stderr_handle {
-            let mut buf = [0u8; 4096];
-            loop {
-                match std::io::Read::read(&mut err, &mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if let Ok(mut v) = se.lock() {
-                            v.extend_from_slice(&buf[..n]);
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
-    });
+    let stdout_collector = spawn_pipe_drainer(child.stdout.take());
+    let stderr_collector = spawn_pipe_drainer(child.stderr.take());
     let status = child.wait().expect("failed to wait on ftm");
     let stdout = std::mem::take(&mut *stdout_collector.lock().unwrap());
     let stderr = std::mem::take(&mut *stderr_collector.lock().unwrap());
@@ -344,7 +332,7 @@ fn count_files_recursive(dir: &Path) -> usize {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                if path.file_name().map(|n| n == ".tmp").unwrap_or(false) {
+                if path.file_name().is_some_and(|n| n == ".tmp") {
                     continue;
                 }
                 count += count_files_recursive(&path);
@@ -2675,12 +2663,8 @@ mod logs_tests {
         }
         let count_before: usize = std::fs::read_dir(&log_dir)
             .unwrap()
-            .filter(|e| {
-                e.as_ref()
-                    .ok()
-                    .and_then(|e| e.path().extension().map(|ext| ext == "log"))
-                    .unwrap_or(false)
-            })
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "log"))
             .count();
         assert_eq!(
             count_before, total_before,
@@ -2693,7 +2677,7 @@ mod logs_tests {
         let entries: Vec<_> = std::fs::read_dir(&log_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map_or(false, |ext| ext == "log"))
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "log"))
             .collect();
         assert_eq!(
             entries.len(),

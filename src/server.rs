@@ -205,31 +205,18 @@ fn compute_diff_hunks(old_text: String, new_text: String) -> Vec<DiffHunk> {
         let ctx_new_end = (after_end + CONTEXT_LINES).min(input.after.len() as u32);
 
         let mut lines: Vec<DiffLine> = Vec::new();
-
-        for i in ctx_old_start..before_start {
-            lines.push(DiffLine {
-                tag: "equal",
-                content: line_content(i, true),
-            });
-        }
-        for i in before_start..before_end {
-            lines.push(DiffLine {
-                tag: "delete",
-                content: line_content(i, true),
-            });
-        }
-        for i in after_start..after_end {
-            lines.push(DiffLine {
-                tag: "insert",
-                content: line_content(i, false),
-            });
-        }
-        for i in after_end..ctx_new_end {
-            lines.push(DiffLine {
-                tag: "equal",
-                content: line_content(i, false),
-            });
-        }
+        let mut push = |range: std::ops::Range<u32>, tag: &'static str, is_old: bool| {
+            for i in range {
+                lines.push(DiffLine {
+                    tag,
+                    content: line_content(i, is_old),
+                });
+            }
+        };
+        push(ctx_old_start..before_start, "equal", true);
+        push(before_start..before_end, "delete", true);
+        push(after_start..after_end, "insert", false);
+        push(after_end..ctx_new_end, "equal", false);
 
         let old_start_1based = (ctx_old_start + 1) as usize;
         let new_start_1based = (after_start.saturating_sub(CONTEXT_LINES) + 1) as usize;
@@ -506,13 +493,13 @@ async fn checkout(
                 .await
                 {
                     Ok(Ok(r)) => {
-                        if r.entries_trimmed > 0 || r.bytes_freed_trim > 0 {
+                        if r.entries_trimmed > 0 {
                             info!(
                                 "Periodic clean: {} history entries trimmed, {} freed",
                                 r.entries_trimmed, r.bytes_freed_trim
                             );
                         }
-                        if r.files_removed > 0 || r.bytes_removed > 0 {
+                        if r.files_removed > 0 {
                             info!(
                                 "Periodic clean: {} orphan snapshot(s) removed, {} freed",
                                 r.files_removed, r.bytes_removed
@@ -631,17 +618,14 @@ async fn diff_handler(
 ) -> Result<Json<DiffResponse>, ApiError> {
     let (storage, _) = state.storage().await.ok_or_else(not_checked_out)?;
 
-    let old_text = if let Some(ref from) = q.from {
-        if from.is_empty() {
-            String::new()
-        } else {
+    let old_text = match q.from.as_deref().filter(|s| !s.is_empty()) {
+        Some(from) => {
             let bytes = storage
                 .read_snapshot(from)
                 .map_err(|e| api_err(StatusCode::NOT_FOUND, e.to_string()))?;
             String::from_utf8_lossy(&bytes).into_owned()
         }
-    } else {
-        String::new()
+        None => String::new(),
     };
 
     let new_bytes = storage
@@ -787,20 +771,13 @@ async fn logs_handler(State(state): State<SharedState>) -> Result<Json<LogsRespo
 
     let mut files: Vec<String> = std::fs::read_dir(&log_dir)
         .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.ends_with(".log") {
-                Some(name)
-            } else {
-                None
-            }
-        })
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|name| name.ends_with(".log"))
         .collect();
 
     // Sort descending (newest first) — filenames are YYYYMMDD-HHMMSS.log
-    files.sort();
-    files.reverse();
+    files.sort_unstable_by(|a, b| b.cmp(a));
 
     Ok(Json(LogsResponse {
         log_dir: log_dir_str,

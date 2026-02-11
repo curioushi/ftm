@@ -177,7 +177,7 @@ fn kill_all_servers(keep_pid: Option<u32>) {
         if !process
             .name()
             .to_str()
-            .map_or(false, |n| n.starts_with("ftm"))
+            .is_some_and(|n| n.starts_with("ftm"))
         {
             continue;
         }
@@ -266,12 +266,12 @@ fn prune_old_logs(log_dir: &std::path::Path, keep: usize) {
     let mut names: Vec<std::path::PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |ext| ext == "log"))
+        .filter(|p| p.extension().is_some_and(|ext| ext == "log"))
         .collect();
     if names.len() <= keep {
         return;
     }
-    names.sort_by(|a, b| b.cmp(a));
+    names.sort_unstable_by(|a, b| b.cmp(a));
     for path in names.into_iter().skip(keep) {
         let _ = std::fs::remove_file(&path);
     }
