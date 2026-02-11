@@ -2599,11 +2599,17 @@
     if (!currentFile || !selectedRestoreChecksum) return;
 
     const latestChecksum = getLatestChecksum();
+    const isDeleted =
+      historyEntries.length > 0 && historyEntries[historyEntries.length - 1].op === 'delete';
 
     // Populate info panel
     $restoreFilepath.textContent = currentFile;
     $restoreInfoFilename.textContent = currentFile;
-    $restoreInfoFrom.textContent = latestChecksum ? latestChecksum.slice(0, 12) : '\u2014';
+    $restoreInfoFrom.textContent = isDeleted
+      ? '\u2014'
+      : latestChecksum
+        ? latestChecksum.slice(0, 12)
+        : '\u2014';
     $restoreInfoTo.textContent = selectedRestoreChecksum.slice(0, 12);
     $restoreInfoStats.innerHTML = '';
 
@@ -2619,10 +2625,11 @@
     $restoreCancel.disabled = false;
     $restoreConfirm.focus();
 
-    // Fetch diff: from=current, to=restore target
+    // Fetch diff: from=current, to=restore target. When file is deleted, do not pass from so
+    // server diffs empty vs target and we see the full restore.
     try {
       let url = '/api/diff?to=' + encodeURIComponent(selectedRestoreChecksum);
-      if (latestChecksum) {
+      if (latestChecksum && !isDeleted) {
         url += '&from=' + encodeURIComponent(latestChecksum);
       }
       const diff = await apiJson(url);
