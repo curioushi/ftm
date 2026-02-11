@@ -10,6 +10,7 @@ use std::path::{Component, Path, PathBuf};
 pub struct Storage {
     ftm_dir: PathBuf,
     max_history: usize,
+    max_quota: u64,
 }
 
 pub struct IndexView {
@@ -53,10 +54,11 @@ impl IndexView {
 }
 
 impl Storage {
-    pub fn new(ftm_dir: PathBuf, max_history: usize) -> Self {
+    pub fn new(ftm_dir: PathBuf, max_history: usize, max_quota: u64) -> Self {
         Self {
             ftm_dir,
             max_history,
+            max_quota,
         }
     }
 
@@ -330,21 +332,72 @@ impl Storage {
             view.update_last_for_file(entry.file.clone(), index.history.len() - 1);
         }
         if count > 0 {
-            if self.trim_history(index) {
+            if self.trim_history_and_quota(index)? {
                 view.rebuild(index);
             }
         }
         Ok(count)
     }
 
-    pub(crate) fn trim_history(&self, index: &mut Index) -> bool {
+    /// Trim oldest history entries until both max_history and max_quota are satisfied.
+    /// Removes snapshot files that become unreferenced. Returns true if any entries were removed.
+    pub(crate) fn trim_history_and_quota(&self, index: &mut Index) -> Result<bool> {
         let n = index.history.len();
-        if n <= self.max_history {
-            return false;
+        if n == 0 {
+            return Ok(false);
         }
-        let to_remove = n - self.max_history;
+
+        let mut checksum_size: HashMap<String, u64> = HashMap::new();
+        let mut ref_count: HashMap<String, usize> = HashMap::new();
+        for entry in &index.history {
+            if let Some(ref c) = entry.checksum {
+                *ref_count.entry(c.clone()).or_default() += 1;
+                if !checksum_size.contains_key(c) {
+                    let size = entry.size.unwrap_or_else(|| {
+                        std::fs::metadata(self.snapshot_path(c))
+                            .map(|m| m.len())
+                            .unwrap_or(0)
+                    });
+                    checksum_size.insert(c.clone(), size);
+                }
+            }
+        }
+        let mut total_volume: u64 = checksum_size.values().sum();
+
+        let mut to_remove = 0usize;
+        while (n - to_remove > self.max_history || total_volume > self.max_quota) && to_remove < n {
+            let entry = &index.history[to_remove];
+            if let Some(ref c) = entry.checksum {
+                if let Some(count) = ref_count.get_mut(c) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        if let Some(&size) = checksum_size.get(c) {
+                            total_volume = total_volume.saturating_sub(size);
+                        }
+                    }
+                }
+            }
+            to_remove += 1;
+        }
+
+        if to_remove == 0 {
+            return Ok(false);
+        }
+
+        let snapshots_to_delete: HashSet<String> = index.history[..to_remove]
+            .iter()
+            .filter_map(|e| e.checksum.as_ref().cloned())
+            .collect();
         index.history.drain(0..to_remove);
-        true
+
+        for c in &snapshots_to_delete {
+            if ref_count.get(c).copied().unwrap_or(0) == 0 {
+                let path = self.snapshot_path(c);
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+
+        Ok(true)
     }
 
     /// Read the raw bytes of a snapshot by its full checksum.

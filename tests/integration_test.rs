@@ -213,13 +213,14 @@ fn kill_process(pid: u32) {
 }
 
 /// Pre-initialize .ftm in a directory with custom settings.
-/// Optional scan_interval and clean_interval use server defaults when None.
+/// Optional scan_interval, clean_interval, and max_quota use server defaults when None.
 fn pre_init_ftm(
     dir: &Path,
     max_history: usize,
     max_file_size: u64,
     scan_interval: Option<u64>,
     clean_interval: Option<u64>,
+    max_quota: Option<u64>,
 ) {
     let ftm_dir = dir.join(".ftm");
     std::fs::create_dir_all(&ftm_dir).unwrap();
@@ -232,6 +233,9 @@ fn pre_init_ftm(
     }
     if let Some(c) = clean_interval {
         settings.push_str(&format!("\n  clean_interval: {}", c));
+    }
+    if let Some(q) = max_quota {
+        settings.push_str(&format!("\n  max_quota: {}", q));
     }
     let config_yaml = format!(
         r#"watch:
@@ -350,6 +354,28 @@ fn count_files_recursive(dir: &Path) -> usize {
         }
     }
     count
+}
+
+/// Total size of snapshots referenced by index (unique checksums only). Uses entry.size or file metadata.
+fn referenced_snapshot_volume(dir: &Path, index: &TestIndex) -> u64 {
+    let snap_dir = dir.join(".ftm/snapshots");
+    let mut seen = std::collections::HashSet::new();
+    let mut total = 0u64;
+    for e in &index.history {
+        if let Some(ref c) = e.checksum {
+            if seen.insert(c.clone()) {
+                let size = e.size.unwrap_or_else(|| {
+                    let c1 = &c[0..1];
+                    let c2 = &c[1..2];
+                    std::fs::metadata(snap_dir.join(c1).join(c2).join(c))
+                        .map(|m| m.len())
+                        .unwrap_or(0)
+                });
+                total += size;
+            }
+        }
+    }
+    total
 }
 
 // ===========================================================================
@@ -1635,7 +1661,7 @@ mod trim_tests {
         let dir = setup_test_dir();
 
         // Pre-init .ftm with max_history=3
-        pre_init_ftm(dir.path(), 3, 30 * 1024 * 1024, None, None);
+        pre_init_ftm(dir.path(), 3, 30 * 1024 * 1024, None, None, None);
 
         let (mut server, _port) = start_server_and_checkout(dir.path());
         let file_path = dir.path().join("trimme.yaml");
@@ -1687,6 +1713,56 @@ mod trim_tests {
                 "Trimmed entries for trimme should be the newest versions (v3, v4) in order"
             );
         }
+
+        stop_server(&mut server);
+    }
+
+    #[test]
+    fn test_max_quota_trims_by_volume() {
+        let dir = setup_test_dir();
+        let max_quota = 150 * 1024; // 150KB
+        pre_init_ftm(
+            dir.path(),
+            1000,
+            30 * 1024 * 1024,
+            None,
+            None,
+            Some(max_quota),
+        );
+
+        let (mut server, port) = start_server_and_checkout(dir.path());
+        let file_path = dir.path().join("bigfile.yaml");
+
+        // Write 5 versions, each ~50KB, so total ~250KB > 150KB quota
+        let chunk: String = "x".repeat(1024);
+        for i in 0..5 {
+            let content = format!("version: {}\n{}", i, chunk.repeat(50));
+            std::fs::write(&file_path, content).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        let out = run_ftm_with_port(port, &["scan"]);
+        assert!(out.status.success(), "scan should succeed");
+        assert!(
+            wait_for_index(dir.path(), "bigfile.yaml", 1, 5000),
+            "bigfile.yaml should have at least one entry"
+        );
+
+        let index = load_test_index(dir.path());
+        let volume = referenced_snapshot_volume(dir.path(), &index);
+        assert!(
+            volume <= max_quota,
+            "referenced snapshot volume {} should be <= max_quota {}",
+            volume,
+            max_quota
+        );
+
+        let snapshot_count = count_snapshot_files(dir.path());
+        assert!(
+            snapshot_count < 5,
+            "oldest snapshots should be removed from disk, got {} files",
+            snapshot_count
+        );
 
         stop_server(&mut server);
     }
@@ -1871,7 +1947,7 @@ mod scan_tests {
         let dir = setup_test_dir();
 
         // Pre-init .ftm with max_file_size=100
-        pre_init_ftm(dir.path(), 100, 100, None, None);
+        pre_init_ftm(dir.path(), 100, 100, None, None, None);
 
         // Create files BEFORE checkout
         std::fs::write(dir.path().join("small.txt"), "tiny").unwrap();
@@ -2015,7 +2091,7 @@ mod clean_tests {
     #[test]
     fn test_clean_removes_orphan_snapshots() {
         let dir = setup_test_dir();
-        pre_init_ftm(dir.path(), 1, 30 * 1024 * 1024, None, None);
+        pre_init_ftm(dir.path(), 1, 30 * 1024 * 1024, None, None, None);
 
         std::fs::write(dir.path().join("clean_orphan.yaml"), "v1").unwrap();
 
@@ -2043,16 +2119,16 @@ mod clean_tests {
         );
         let snap_before = count_snapshot_files(dir.path());
         assert_eq!(
-            snap_before, 2,
-            "Two snapshots on disk before clean (v1 orphan + v2)"
+            snap_before, 1,
+            "Trim already deletes unreferenced snapshots; only v2 snapshot remains"
         );
 
         let out = run_ftm_with_port(port, &["clean"]);
         assert!(out.status.success());
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
-            stdout.contains("1 snapshot(s) removed"),
-            "Expected '1 snapshot(s) removed' in: {}",
+            stdout.contains("0 snapshot(s) removed"),
+            "No orphans left for clean to remove: {}",
             stdout
         );
 
@@ -2082,7 +2158,7 @@ mod clean_tests {
     #[test]
     fn test_periodic_clean_removes_orphans_after_interval() {
         let dir = setup_test_dir();
-        pre_init_ftm(dir.path(), 1, 30 * 1024 * 1024, None, Some(2));
+        pre_init_ftm(dir.path(), 1, 30 * 1024 * 1024, None, Some(2), None);
 
         std::fs::write(dir.path().join("periodic_clean.yaml"), "v1").unwrap();
 
@@ -2096,8 +2172,8 @@ mod clean_tests {
 
         let snap_before = count_snapshot_files(dir.path());
         assert_eq!(
-            snap_before, 2,
-            "Two snapshots before periodic clean (v1 orphan + v2)"
+            snap_before, 1,
+            "Trim already deletes unreferenced snapshots; only v2 snapshot remains"
         );
 
         std::thread::sleep(std::time::Duration::from_secs(4));
@@ -2105,7 +2181,7 @@ mod clean_tests {
         let snap_after = count_snapshot_files(dir.path());
         assert_eq!(
             snap_after, 1,
-            "Periodic clean should remove orphan; expected 1 snapshot, got {}",
+            "One snapshot should remain after periodic clean, got {}",
             snap_after
         );
 
@@ -2393,7 +2469,7 @@ mod config_hot_reload_tests {
         .unwrap();
 
         // Pre-init with 8s interval; no scan in 1s
-        pre_init_ftm(dir.path(), 100, 30 * 1024 * 1024, Some(8), None);
+        pre_init_ftm(dir.path(), 100, 30 * 1024 * 1024, Some(8), None, None);
 
         let (mut server, port) = start_server_and_checkout(dir.path());
 
@@ -2426,7 +2502,7 @@ mod config_hot_reload_tests {
         std::fs::write(dir.path().join("medium.txt"), "x".repeat(200)).unwrap();
 
         // Pre-init with max_file_size=100 — file will be skipped
-        pre_init_ftm(dir.path(), 100, 100, None, None);
+        pre_init_ftm(dir.path(), 100, 100, None, None, None);
 
         let (mut server, port) = start_server_and_checkout(dir.path());
 
@@ -2688,7 +2764,7 @@ mod periodic_scan_tests {
         .unwrap();
 
         // Pre-init with 2s scan interval (minimum)
-        pre_init_ftm(dir.path(), 100, 30 * 1024 * 1024, Some(2), None);
+        pre_init_ftm(dir.path(), 100, 30 * 1024 * 1024, Some(2), None, None);
 
         let (mut server, _port) = start_server_and_checkout(dir.path());
 
@@ -2722,7 +2798,7 @@ mod periodic_scan_tests {
         std::fs::write(dir.path().join("should_not_scan.txt"), "no scan").unwrap();
 
         // Pre-init with 5s interval so no scan runs within 2s
-        pre_init_ftm(dir.path(), 100, 30 * 1024 * 1024, Some(5), None);
+        pre_init_ftm(dir.path(), 100, 30 * 1024 * 1024, Some(5), None, None);
 
         let (mut server, _port) = start_server_and_checkout(dir.path());
 

@@ -15,12 +15,19 @@ pub struct Settings {
     /// Global history queue size (max total entries across all files).
     pub max_history: usize,
     pub max_file_size: u64,
+    /// Max total size in bytes of referenced snapshots. Oldest history and snapshots are trimmed when exceeded.
+    #[serde(default = "default_max_quota")]
+    pub max_quota: u64,
     /// Interval in seconds between periodic full scans. Minimum 2.
     #[serde(default = "default_scan_interval")]
     pub scan_interval: u64,
     /// Interval in seconds between periodic clean (orphan snapshot removal). Minimum 2.
     #[serde(default = "default_clean_interval")]
     pub clean_interval: u64,
+}
+
+fn default_max_quota() -> u64 {
+    1024 * 1024 * 1024 // 1GB
 }
 
 fn default_scan_interval() -> u64 {
@@ -76,6 +83,7 @@ impl Default for Config {
             settings: Settings {
                 max_history: 10_000,
                 max_file_size: 30 * 1024 * 1024, // 30MB
+                max_quota: default_max_quota(),
                 scan_interval: 300,
                 clean_interval: 3600,
             },
@@ -158,13 +166,14 @@ impl Config {
         match key {
             "settings.max_history" => Ok(self.settings.max_history.to_string()),
             "settings.max_file_size" => Ok(self.settings.max_file_size.to_string()),
+            "settings.max_quota" => Ok(self.settings.max_quota.to_string()),
             "settings.scan_interval" => Ok(self.settings.scan_interval.to_string()),
             "settings.clean_interval" => Ok(self.settings.clean_interval.to_string()),
             "watch.patterns" => Ok(self.watch.patterns.join(",")),
             "watch.exclude" => Ok(self.watch.exclude.join(",")),
             _ => anyhow::bail!(
                 "Unknown config key '{}'. Valid keys: settings.max_history, \
-                 settings.max_file_size, settings.scan_interval, settings.clean_interval, \
+                 settings.max_file_size, settings.max_quota, settings.scan_interval, settings.clean_interval, \
                  watch.patterns, watch.exclude",
                 key
             ),
@@ -183,6 +192,15 @@ impl Config {
                 self.settings.max_file_size = value
                     .parse()
                     .map_err(|_| anyhow::anyhow!("Invalid value for max_file_size: {}", value))?;
+            }
+            "settings.max_quota" => {
+                let v: u64 = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid value for max_quota: {}", value))?;
+                if v == 0 {
+                    anyhow::bail!("max_quota must be > 0, got {}", v);
+                }
+                self.settings.max_quota = v;
             }
             "settings.scan_interval" => {
                 let v: u64 = value
@@ -211,7 +229,7 @@ impl Config {
             }
             _ => anyhow::bail!(
                 "Unknown config key '{}'. Valid keys: settings.max_history, \
-                 settings.max_file_size, settings.scan_interval, settings.clean_interval, \
+                 settings.max_file_size, settings.max_quota, settings.scan_interval, settings.clean_interval, \
                  watch.patterns, watch.exclude",
                 key
             ),

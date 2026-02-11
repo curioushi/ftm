@@ -187,6 +187,7 @@ watch:
 settings:
   max_history: 10000       # Max total history entries (global queue)
   max_file_size: 31457280  # Max file size to track (30 MB)
+  max_quota: 1073741824    # Max total snapshot size in bytes (1 GB); oldest trimmed when exceeded
   scan_interval: 300       # Seconds between periodic scans
   clean_interval: 3600     # Seconds between orphan snapshot clean
 ```
@@ -199,6 +200,7 @@ settings:
 | `watch.exclude` | list | Glob patterns for files/dirs to ignore |
 | `settings.max_history` | int | Maximum total history entries (global queue size) |
 | `settings.max_file_size` | int | Maximum file size in bytes |
+| `settings.max_quota` | int | Maximum total size in bytes of referenced snapshots (default 1 GB); when exceeded, oldest history and snapshots are trimmed |
 | `settings.scan_interval` | int | Seconds between full scans |
 | `settings.clean_interval` | int | Seconds between orphan snapshot clean |
 

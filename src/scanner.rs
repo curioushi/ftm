@@ -64,7 +64,7 @@ impl Scanner {
         )?;
 
         if index_changed {
-            if self.storage.trim_history(&mut index) {
+            if self.storage.trim_history_and_quota(&mut index)? {
                 view.rebuild(&index);
             }
             self.storage.save_index(&index)?;
