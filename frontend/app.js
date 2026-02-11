@@ -26,6 +26,7 @@
   const TL_HEIGHT_STORAGE_KEY = 'ftm-timeline-height';
   const TL_LANES_WIDTH_STORAGE_KEY = 'ftm-tl-lanes-width';
   const TREE_DEPTH_STORAGE_KEY = 'ftm-tree-depth';
+  const SHOW_DELETED_STORAGE_KEY = 'ftm-show-deleted';
 
   // Timeline state
   let tlViewStart = 0; // ms timestamp (left edge of visible range)
@@ -2178,6 +2179,7 @@
 
   $showDeleted.addEventListener('change', () => {
     hideDeletedFiles = !$showDeleted.checked;
+    localStorage.setItem(SHOW_DELETED_STORAGE_KEY, $showDeleted.checked ? 'true' : 'false');
     loadFiles();
     refreshTimelineView();
   });
@@ -2464,6 +2466,10 @@
     }
     I18N.applyI18n();
 
+    const savedShowDeleted = localStorage.getItem(SHOW_DELETED_STORAGE_KEY);
+    if (savedShowDeleted !== null) {
+      $showDeleted.checked = savedShowDeleted === 'true' || savedShowDeleted === '1';
+    }
     hideDeletedFiles = !$showDeleted.checked;
     ensureFirstVisitLayoutDefaults();
     initDragResize({
