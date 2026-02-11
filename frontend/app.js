@@ -104,6 +104,11 @@
   const $timelineLabel = document.getElementById('timeline-label');
   const $btnScan = document.getElementById('btn-scan');
   const $status = document.getElementById('status');
+  const $toolbarStats = document.getElementById('toolbar-stats');
+  const $statsHistoryFill = document.getElementById('stats-history-fill');
+  const $statsHistoryText = document.getElementById('stats-history-text');
+  const $statsQuotaFill = document.getElementById('stats-quota-fill');
+  const $statsQuotaText = document.getElementById('stats-quota-text');
   const $sidebar = document.getElementById('sidebar');
   const $resizeHandle = document.getElementById('resize-handle');
 
@@ -160,6 +165,49 @@
       throw new Error(data.message || res.statusText);
     }
     return res.json();
+  }
+
+  function formatNumber(n) {
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, '') + 'k';
+    return String(n);
+  }
+
+  function formatBytes(n) {
+    const KB = 1024;
+    const MB = KB * 1024;
+    const GB = MB * 1024;
+    if (n >= GB) return (n / GB).toFixed(1).replace(/\.0$/, '') + ' GB';
+    if (n >= MB) return (n / MB).toFixed(1).replace(/\.0$/, '') + ' MB';
+    if (n >= KB) return (n / KB).toFixed(1).replace(/\.0$/, '') + ' KB';
+    return n + ' B';
+  }
+
+  async function loadStats() {
+    if (
+      !$toolbarStats ||
+      !$statsHistoryFill ||
+      !$statsHistoryText ||
+      !$statsQuotaFill ||
+      !$statsQuotaText
+    )
+      return;
+    try {
+      const st = await apiJson('/api/stats');
+      const historyPct =
+        st.max_history > 0 ? Math.min(100, (st.history / st.max_history) * 100) : 0;
+      const quotaPct = st.max_quota > 0 ? Math.min(100, (st.quota / st.max_quota) * 100) : 0;
+      $statsHistoryFill.style.width = historyPct + '%';
+      $statsHistoryText.textContent =
+        formatNumber(st.history) + ' / ' + formatNumber(st.max_history);
+      $statsQuotaFill.style.width = quotaPct + '%';
+      $statsQuotaText.textContent = formatBytes(st.quota) + ' / ' + formatBytes(st.max_quota);
+    } catch {
+      $statsHistoryFill.style.width = '0%';
+      $statsHistoryText.textContent = '0 / 0';
+      $statsQuotaFill.style.width = '0%';
+      $statsQuotaText.textContent = '0 B / 0 B';
+    }
   }
 
   // ---- File list -----------------------------------------------------------
@@ -2437,7 +2485,9 @@
       const health = await apiJson('/api/health');
       if (health.watch_dir) {
         $status.textContent = health.watch_dir;
+        if ($toolbarStats) $toolbarStats.setAttribute('aria-hidden', 'false');
         await loadFiles();
+        await loadStats();
         const storedPaths = restoreSelectedFiles().filter((p) => treeHasFile(fileTree, p, ''));
         if (storedPaths.length > 1) {
           storedPaths.forEach((p) => expandDirsForPath(p));
@@ -2457,11 +2507,13 @@
           if (rangeBtn) await onRangeButtonClick(rangeBtn);
         }
       } else {
+        if ($toolbarStats) $toolbarStats.setAttribute('aria-hidden', 'true');
         $status.textContent = t('status.noCheckout');
         $diffViewer.innerHTML = '<div class="empty-state">' + t('status.checkoutHint') + '</div>';
         requestTimelineDraw();
       }
     } catch {
+      if ($toolbarStats) $toolbarStats.setAttribute('aria-hidden', 'true');
       $status.textContent = t('status.serverUnreachable');
       $diffViewer.innerHTML =
         '<div class="empty-state">' + escapeHtml(t('status.noConnect')) + '</div>';

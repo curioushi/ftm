@@ -26,6 +26,22 @@
             <option value="en" data-i18n="lang.en">EN</option>
             <option value="zh-CN" data-i18n="lang.zhCN">中文</option>
           </select>
+          <div class="toolbar-stats" id="toolbar-stats" aria-hidden="true">
+            <div class="toolbar-stat">
+              <span class="toolbar-stat-label" data-i18n="toolbar.history">History</span>
+              <div class="stats-progress-track">
+                <div class="stats-progress-fill" id="stats-history-fill"></div>
+              </div>
+              <span class="toolbar-stat-text" id="stats-history-text">0 / 0</span>
+            </div>
+            <div class="toolbar-stat">
+              <span class="toolbar-stat-label" data-i18n="toolbar.quota">Quota</span>
+              <div class="stats-progress-track">
+                <div class="stats-progress-fill" id="stats-quota-fill"></div>
+              </div>
+              <span class="toolbar-stat-text" id="stats-quota-text">0 B / 0 B</span>
+            </div>
+          </div>
         </div>
         <div class="toolbar-right">
           <label class="toolbar-checkbox"

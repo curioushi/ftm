@@ -134,6 +134,14 @@ struct ConfigResponse {
 }
 
 #[derive(Serialize)]
+struct StatsResponse {
+    history: usize,
+    max_history: usize,
+    quota: u64,
+    max_quota: u64,
+}
+
+#[derive(Serialize)]
 struct LogsResponse {
     log_dir: String,
     files: Vec<String>,
@@ -721,6 +729,26 @@ async fn config_get(
     Ok(Json(ConfigResponse { data }))
 }
 
+async fn stats_handler(State(state): State<SharedState>) -> Result<Json<StatsResponse>, ApiError> {
+    let (max_history, max_quota) = {
+        let guard = state.ctx.read().await;
+        let ctx = guard.as_ref().ok_or_else(not_checked_out)?;
+        let cfg = ctx.config.read().unwrap();
+        (cfg.settings.max_history, cfg.settings.max_quota)
+    };
+    let (storage, _) = state.storage().await.ok_or_else(not_checked_out)?;
+    let (history, quota) = tokio::task::spawn_blocking(move || storage.history_and_quota_stats())
+        .await
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(StatsResponse {
+        history,
+        max_history,
+        quota,
+        max_quota,
+    }))
+}
+
 async fn config_set(
     State(state): State<SharedState>,
     Json(req): Json<ConfigSetRequest>,
@@ -823,6 +851,7 @@ pub async fn serve(port: u16) -> Result<()> {
         .route("/api/scan", post(scan))
         .route("/api/clean", post(clean_handler))
         .route("/api/config", get(config_get).post(config_set))
+        .route("/api/stats", get(stats_handler))
         .route("/api/logs", get(logs_handler))
         .route("/api/snapshot", get(snapshot_handler))
         .route("/api/diff", get(diff_handler))

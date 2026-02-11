@@ -81,6 +81,7 @@ FTM follows a client-server architecture. Running `ftm checkout` automatically s
 | `ftm clean` | Remove snapshot files not referenced by any history entry, free disk space |
 | `ftm config get [key]` | Show configuration (all or by key) |
 | `ftm config set <key> <value>` | Update a configuration value |
+| `ftm stats` | Show history and quota usage (current / max) |
 | `ftm version` | Print client and server version |
 | `ftm logs` | View server log files |
 | `ftm stop` | Gracefully stop the background server |
@@ -106,6 +107,9 @@ ftm history config/settings.yaml
 # Restore a file (checksum prefix, at least 8 chars)
 ftm restore config/settings.yaml a3f8e2b1
 
+# Check history and quota usage
+ftm stats
+
 # Change max history versions per file
 ftm config set settings.max_history 200
 
@@ -118,6 +122,13 @@ ftm config set settings.scan_interval 60
 ## Web UI
 
 Once `ftm checkout` is running, open **http://localhost:13580** in your browser.
+
+### Toolbar
+
+- **History / Quota** — Progress bars show current history count and snapshot storage usage against `max_history` and `max_quota`. Displayed next to the language switcher when a directory is checked out.
+- **Language** — Switch between English and Chinese.
+- **Show deleted files** — Toggle whether deleted files appear in the file list.
+- **Scan** — Trigger a full manual scan.
 
 ### File Tree (Left Panel)
 

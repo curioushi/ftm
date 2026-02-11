@@ -103,6 +103,27 @@ impl Storage {
         IndexView::from_index(index)
     }
 
+    /// Read-only stats: (history entry count, total bytes of referenced snapshots).
+    /// Each checksum is counted once for volume (deduplicated).
+    pub fn history_and_quota_stats(&self) -> Result<(usize, u64)> {
+        let index = self.load_index()?;
+        let n = index.history.len();
+        let mut checksum_size: HashMap<String, u64> = HashMap::new();
+        for entry in &index.history {
+            if let Some(ref c) = entry.checksum {
+                checksum_size.entry(c.clone()).or_insert_with(|| {
+                    entry.size.unwrap_or_else(|| {
+                        std::fs::metadata(self.snapshot_path(c))
+                            .map(|m| m.len())
+                            .unwrap_or(0)
+                    })
+                });
+            }
+        }
+        let total_volume: u64 = checksum_size.values().sum();
+        Ok((n, total_volume))
+    }
+
     pub fn compute_checksum(content: &[u8]) -> String {
         let mut hasher = Sha256::new();
         hasher.update(content);

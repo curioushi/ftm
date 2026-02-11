@@ -85,6 +85,14 @@ struct LogsInfo {
     files: Vec<String>,
 }
 
+#[derive(Deserialize)]
+struct StatsInfo {
+    history: usize,
+    max_history: usize,
+    quota: u64,
+    max_quota: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Client helpers
 // ---------------------------------------------------------------------------
@@ -346,6 +354,22 @@ pub fn client_clean(port: u16) -> Result<()> {
         );
     }
     println!("Clean complete");
+    Ok(())
+}
+
+pub fn client_stats(port: u16) -> Result<()> {
+    let resp = make_client()
+        .get(format!("{}/api/stats", base_url(port)))
+        .send()
+        .map_err(handle_connection_error)?;
+    let resp = check_response(resp)?;
+    let st: StatsInfo = resp.json().context("Failed to parse stats response")?;
+    println!("History: {} / {}", st.history, st.max_history);
+    println!(
+        "Quota:   {} / {}",
+        format_bytes(st.quota),
+        format_bytes(st.max_quota)
+    );
     Ok(())
 }
 

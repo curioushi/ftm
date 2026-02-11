@@ -98,6 +98,56 @@ input[type='text']:focus {
   gap: 12px;
 }
 
+.toolbar-stats {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  margin-left: 4px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+
+.toolbar-stats[aria-hidden='true'] {
+  display: none;
+}
+
+.toolbar-stat {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  line-height: 1.2;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+.toolbar-stat-label {
+  width: 3.2em;
+  flex-shrink: 0;
+}
+
+.stats-progress-track {
+  width: 48px;
+  height: 4px;
+  background: var(--bg-active);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.stats-progress-fill {
+  height: 100%;
+  min-width: 0;
+  background: var(--blue);
+  transition: width 0.15s;
+}
+
+.toolbar-stat-text {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--fg-dim);
+}
+
 .toolbar-right {
   display: flex;
   align-items: center;

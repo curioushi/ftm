@@ -54,6 +54,8 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Show history and quota usage (current / max)
+    Stats,
     /// Start the FTM server (daemon mode, internal use only)
     #[command(hide = true)]
     Serve {
@@ -142,6 +144,7 @@ fn main() -> Result<()> {
             ConfigAction::Get { key } => client::client_config_get(cli.port, key.as_deref()),
             ConfigAction::Set { key, value } => client::client_config_set(cli.port, &key, &value),
         },
+        Commands::Stats => client::client_stats(cli.port),
         Commands::Logs => client::client_logs(cli.port),
         Commands::Stop => {
             if !client::is_server_running(cli.port) {

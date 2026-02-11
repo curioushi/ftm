@@ -18,6 +18,8 @@ var I18N = (function () {
       'toolbar.scan': 'Scan',
       'toolbar.scanTitle': 'Scan for changes',
       'toolbar.scanning': 'Scanning...',
+      'toolbar.history': 'History',
+      'toolbar.quota': 'Quota',
       // -- sidebar --
       'sidebar.filterPlaceholder': 'filter files...',
       'sidebar.clearFilter': 'Clear filter',
@@ -116,6 +118,8 @@ var I18N = (function () {
       'toolbar.scan': '\u626B\u63CF',
       'toolbar.scanTitle': '\u626B\u63CF\u53D8\u66F4',
       'toolbar.scanning': '\u626B\u63CF\u4E2D...',
+      'toolbar.history': '\u5386\u53F2',
+      'toolbar.quota': '\u914D\u989D',
       // -- sidebar --
       'sidebar.filterPlaceholder': '\u7B5B\u9009\u6587\u4EF6...',
       'sidebar.clearFilter': '\u6E05\u9664\u7B5B\u9009',
