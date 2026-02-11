@@ -63,6 +63,20 @@ var I18N = (function () {
       'status.checkoutHint': 'Run <code>ftm checkout &lt;dir&gt;</code> first',
       // -- confirm --
       'confirm.restore': 'Restore to version {v}?',
+      // -- restore modal --
+      'restore.title': 'Restore Preview',
+      'restore.current': 'Current',
+      'restore.after': 'After Restore',
+      'restore.file': 'File',
+      'restore.from': 'Current Version',
+      'restore.to': 'Restore To',
+      'restore.linesAdded': '+{n} lines',
+      'restore.linesRemoved': '-{n} lines',
+      'restore.cancel': 'Cancel',
+      'restore.confirm': 'Confirm Restore',
+      'restore.loading': 'Loading diff...',
+      'restore.noChanges': 'No changes between these versions',
+      'restore.closeHint': 'Press <kbd>Esc</kbd> or click outside to close.',
       // -- diff --
       'diff.unchangedLines': '\u00B7\u00B7\u00B7 {n} unchanged lines \u00B7\u00B7\u00B7',
       'diff.filesSelected': '{n} files selected',
@@ -147,6 +161,20 @@ var I18N = (function () {
       'status.checkoutHint': '\u8BF7\u5148\u8FD0\u884C <code>ftm checkout &lt;dir&gt;</code>',
       // -- confirm --
       'confirm.restore': '\u786E\u8BA4\u6062\u590D\u5230\u7248\u672C {v}\uFF1F',
+      // -- restore modal --
+      'restore.title': '\u6062\u590D\u9884\u89C8',
+      'restore.current': '\u5F53\u524D\u7248\u672C',
+      'restore.after': '\u6062\u590D\u540E',
+      'restore.file': '\u6587\u4EF6',
+      'restore.from': '\u5F53\u524D\u7248\u672C',
+      'restore.to': '\u6062\u590D\u76EE\u6807',
+      'restore.linesAdded': '+{n} \u884C',
+      'restore.linesRemoved': '-{n} \u884C',
+      'restore.cancel': '\u53D6\u6D88',
+      'restore.confirm': '\u786E\u8BA4\u6062\u590D',
+      'restore.loading': '\u52A0\u8F7D\u5DEE\u5F02\u4E2D...',
+      'restore.noChanges': '\u4E24\u4E2A\u7248\u672C\u4E4B\u95F4\u6CA1\u6709\u53D8\u66F4',
+      'restore.closeHint': '\u6309 <kbd>Esc</kbd> \u6216\u70B9\u51FB\u5916\u90E8\u5173\u95ED\u3002',
       // -- diff --
       'diff.unchangedLines': '\u00B7\u00B7\u00B7 {n} \u884C\u672A\u53D8\u66F4 \u00B7\u00B7\u00B7',
       'diff.filesSelected': '\u5DF2\u9009\u62E9 {n} \u4E2A\u6587\u4EF6',

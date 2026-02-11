@@ -237,6 +237,61 @@
           </p>
         </div>
       </div>
+
+      <div id="restore-overlay" class="restore-overlay" aria-hidden="true">
+        <div
+          id="restore-modal"
+          class="restore-modal"
+          role="dialog"
+          aria-labelledby="restore-title"
+          aria-modal="true"
+        >
+          <div class="restore-header">
+            <h2 id="restore-title" data-i18n="restore.title">Restore Preview</h2>
+            <span id="restore-filepath" class="restore-filepath"></span>
+          </div>
+          <div class="restore-body">
+            <div class="restore-file-info" id="restore-file-info">
+              <div class="restore-info-section">
+                <div class="restore-info-label" data-i18n="restore.file">File</div>
+                <div class="restore-info-value" id="restore-info-filename"></div>
+              </div>
+              <div class="restore-info-section">
+                <div class="restore-info-label" data-i18n="restore.from">From</div>
+                <div class="restore-info-value restore-info-checksum" id="restore-info-from"></div>
+              </div>
+              <div class="restore-info-section">
+                <div class="restore-info-label" data-i18n="restore.to">To</div>
+                <div class="restore-info-value restore-info-checksum" id="restore-info-to"></div>
+              </div>
+              <div class="restore-info-section" id="restore-info-stats"></div>
+            </div>
+            <div class="restore-panels">
+              <div class="restore-panel">
+                <div class="restore-panel-header" data-i18n="restore.current">Current</div>
+                <div class="restore-panel-content" id="restore-panel-left"></div>
+              </div>
+              <div class="restore-panel">
+                <div class="restore-panel-header" data-i18n="restore.after">After Restore</div>
+                <div class="restore-panel-content" id="restore-panel-right"></div>
+              </div>
+            </div>
+          </div>
+          <div class="restore-footer">
+            <p class="restore-close-hint" data-i18n-html="restore.closeHint">
+              Press <kbd>Esc</kbd> or click outside to close.
+            </p>
+            <div class="restore-footer-buttons">
+              <button type="button" id="restore-cancel" class="restore-btn restore-btn-cancel" data-i18n="restore.cancel">
+                Cancel
+              </button>
+              <button type="button" id="restore-confirm" class="restore-btn restore-btn-confirm" data-i18n="restore.confirm">
+                Confirm Restore
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <script src="i18n.js"></script>

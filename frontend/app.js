@@ -105,6 +105,18 @@
   const $helpOverlay = document.getElementById('help-overlay');
   const $helpTitle = document.getElementById('help-title');
 
+  // Restore modal DOM refs
+  const $restoreOverlay = document.getElementById('restore-overlay');
+  const $restoreFilepath = document.getElementById('restore-filepath');
+  const $restoreInfoFilename = document.getElementById('restore-info-filename');
+  const $restoreInfoFrom = document.getElementById('restore-info-from');
+  const $restoreInfoTo = document.getElementById('restore-info-to');
+  const $restoreInfoStats = document.getElementById('restore-info-stats');
+  const $restorePanelLeft = document.getElementById('restore-panel-left');
+  const $restorePanelRight = document.getElementById('restore-panel-right');
+  const $restoreCancel = document.getElementById('restore-cancel');
+  const $restoreConfirm = document.getElementById('restore-confirm');
+
   // ---- API helpers ---------------------------------------------------------
   const API = '';
 
@@ -2164,26 +2176,9 @@
   });
 
   // ---- Restore button ------------------------------------------------------
-  $btnRestore.addEventListener('click', async () => {
+  $btnRestore.addEventListener('click', () => {
     if (!currentFile || !selectedRestoreChecksum) return;
-    const shortChecksum = selectedRestoreChecksum.slice(0, 12);
-    const ok = window.confirm(t('confirm.restore', { v: shortChecksum }));
-    if (!ok) return;
-    $btnRestore.disabled = true;
-    try {
-      await apiPost('/api/restore', {
-        file: currentFile,
-        checksum: selectedRestoreChecksum,
-      });
-      $status.textContent = t('status.restoreRequested', { file: currentFile });
-      $btnRestore.disabled = false;
-      setTimeout(() => location.reload(), 200);
-      return;
-    } catch (e) {
-      $status.textContent = e.message;
-    } finally {
-      $btnRestore.disabled = false;
-    }
+    openRestoreModal();
   });
 
   // ---- Filter input --------------------------------------------------------
@@ -2631,6 +2626,390 @@
       }
     });
   }
+
+  // ---- Restore modal -------------------------------------------------------
+  const RESTORE_ROW_HEIGHT = 20;
+  const RESTORE_OVERSCAN = 20;
+  let restoreRows = []; // unified row data for both panels
+  let restoreSyncing = false; // guard against recursive scroll sync
+  let restoreRafLeft = null;
+  let restoreRafRight = null;
+  let restoreLeftTable = null;
+  let restoreRightTable = null;
+
+  // Synced scrolling (set up once)
+  $restorePanelLeft.addEventListener('scroll', function () {
+    if (restoreSyncing || restoreRows.length === 0) return;
+    restoreSyncing = true;
+    $restorePanelRight.scrollTop = $restorePanelLeft.scrollTop;
+    restoreSyncing = false;
+    scheduleRestoreRender('right');
+    scheduleRestoreRender('left');
+  });
+
+  $restorePanelRight.addEventListener('scroll', function () {
+    if (restoreSyncing || restoreRows.length === 0) return;
+    restoreSyncing = true;
+    $restorePanelLeft.scrollTop = $restorePanelRight.scrollTop;
+    restoreSyncing = false;
+    scheduleRestoreRender('left');
+    scheduleRestoreRender('right');
+  });
+
+  function isRestoreOpen() {
+    return $restoreOverlay.getAttribute('aria-hidden') === 'false';
+  }
+
+  function getLatestChecksum() {
+    for (let i = historyEntries.length - 1; i >= 0; i--) {
+      if (historyEntries[i].checksum) return historyEntries[i].checksum;
+    }
+    return null;
+  }
+
+  async function openRestoreModal() {
+    if (!currentFile || !selectedRestoreChecksum) return;
+
+    const latestChecksum = getLatestChecksum();
+
+    // Populate info panel
+    $restoreFilepath.textContent = currentFile;
+    $restoreInfoFilename.textContent = currentFile;
+    $restoreInfoFrom.textContent = latestChecksum ? latestChecksum.slice(0, 12) : '\u2014';
+    $restoreInfoTo.textContent = selectedRestoreChecksum.slice(0, 12);
+    $restoreInfoStats.innerHTML = '';
+
+    // Show loading state
+    $restorePanelLeft.innerHTML =
+      '<div class="restore-loading">' + escapeHtml(t('restore.loading')) + '</div>';
+    $restorePanelRight.innerHTML =
+      '<div class="restore-loading">' + escapeHtml(t('restore.loading')) + '</div>';
+
+    // Show modal
+    $restoreOverlay.setAttribute('aria-hidden', 'false');
+    $restoreConfirm.disabled = false;
+    $restoreConfirm.focus();
+
+    // Fetch diff: from=current, to=restore target
+    try {
+      let url = '/api/diff?to=' + encodeURIComponent(selectedRestoreChecksum);
+      if (latestChecksum) {
+        url += '&from=' + encodeURIComponent(latestChecksum);
+      }
+      const diff = await apiJson(url);
+      renderRestorePreview(diff);
+    } catch (e) {
+      $restorePanelLeft.innerHTML =
+        '<div class="restore-loading">' + escapeHtml(e.message) + '</div>';
+      $restorePanelRight.innerHTML =
+        '<div class="restore-loading">' + escapeHtml(e.message) + '</div>';
+    }
+  }
+
+  function closeRestoreModal() {
+    $restoreOverlay.setAttribute('aria-hidden', 'true');
+    restoreRows = [];
+    $restorePanelLeft.innerHTML = '';
+    $restorePanelRight.innerHTML = '';
+    restoreLeftTable = null;
+    restoreRightTable = null;
+    $btnRestore.focus();
+  }
+
+  function buildRestoreRows(diff) {
+    var rows = [];
+
+    for (var hi = 0; hi < diff.hunks.length; hi++) {
+      var hunk = diff.hunks[hi];
+
+      // Separator before hunk
+      if (hi > 0 || hunk.old_start > 1 || hunk.new_start > 1) {
+        var skipped;
+        if (hi === 0) {
+          skipped = Math.max(hunk.old_start - 1, hunk.new_start - 1);
+        } else {
+          var prev = diff.hunks[hi - 1];
+          var prevEndOld = restoreHunkEndLine(prev, 'old');
+          var prevEndNew = restoreHunkEndLine(prev, 'new');
+          skipped = Math.max(hunk.old_start - prevEndOld, hunk.new_start - prevEndNew);
+        }
+        if (skipped > 0) {
+          rows.push({
+            type: 'separator',
+            text: t('diff.unchangedLines', { n: skipped }),
+          });
+        }
+      }
+
+      // Lines
+      var oldLine = hunk.old_start;
+      var newLine = hunk.new_start;
+      for (var li = 0; li < hunk.lines.length; li++) {
+        var line = hunk.lines[li];
+        if (line.tag === 'equal') {
+          rows.push({
+            type: 'equal',
+            leftNum: oldLine++,
+            leftContent: line.content,
+            rightNum: newLine++,
+            rightContent: line.content,
+          });
+        } else if (line.tag === 'delete') {
+          rows.push({
+            type: 'delete',
+            leftNum: oldLine++,
+            leftContent: line.content,
+            rightNum: null,
+            rightContent: null,
+          });
+        } else if (line.tag === 'insert') {
+          rows.push({
+            type: 'insert',
+            leftNum: null,
+            leftContent: null,
+            rightNum: newLine++,
+            rightContent: line.content,
+          });
+        }
+      }
+    }
+
+    // Trailing separator
+    if (diff.hunks.length > 0) {
+      var lastHunk = diff.hunks[diff.hunks.length - 1];
+      var lastEndOld = restoreHunkEndLine(lastHunk, 'old');
+      var lastEndNew = restoreHunkEndLine(lastHunk, 'new');
+      var remaining = Math.max(
+        diff.old_total - lastEndOld + 1,
+        diff.new_total - lastEndNew + 1
+      );
+      if (remaining > 0) {
+        rows.push({
+          type: 'separator',
+          text: t('diff.unchangedLines', { n: remaining }),
+        });
+      }
+    }
+
+    return rows;
+  }
+
+  function restoreHunkEndLine(hunk, side) {
+    var line = side === 'old' ? hunk.old_start : hunk.new_start;
+    for (var i = 0; i < hunk.lines.length; i++) {
+      var tag = hunk.lines[i].tag;
+      if (side === 'old' && (tag === 'equal' || tag === 'delete')) line++;
+      if (side === 'new' && (tag === 'equal' || tag === 'insert')) line++;
+    }
+    return line;
+  }
+
+  function renderRestorePreview(diff) {
+    restoreRows = buildRestoreRows(diff);
+
+    // Compute stats
+    var added = 0;
+    var removed = 0;
+    for (var i = 0; i < restoreRows.length; i++) {
+      if (restoreRows[i].type === 'insert') added++;
+      if (restoreRows[i].type === 'delete') removed++;
+    }
+
+    // Update stats display
+    $restoreInfoStats.innerHTML = '';
+    if (added === 0 && removed === 0) {
+      $restoreInfoStats.innerHTML =
+        '<div class="restore-info-value" style="color:var(--fg-dim)">' +
+        escapeHtml(t('restore.noChanges')) +
+        '</div>';
+    } else {
+      var statsDiv = document.createElement('div');
+      statsDiv.className = 'restore-info-stat';
+      if (added > 0) {
+        var addSpan = document.createElement('span');
+        addSpan.className = 'restore-stat-add';
+        addSpan.textContent = t('restore.linesAdded', { n: added });
+        statsDiv.appendChild(addSpan);
+      }
+      if (removed > 0) {
+        var delSpan = document.createElement('span');
+        delSpan.className = 'restore-stat-del';
+        delSpan.textContent = t('restore.linesRemoved', { n: removed });
+        statsDiv.appendChild(delSpan);
+      }
+      $restoreInfoStats.appendChild(statsDiv);
+    }
+
+    if (restoreRows.length === 0) {
+      $restorePanelLeft.innerHTML =
+        '<div class="restore-no-changes">' +
+        escapeHtml(t('restore.noChanges')) +
+        '</div>';
+      $restorePanelRight.innerHTML =
+        '<div class="restore-no-changes">' +
+        escapeHtml(t('restore.noChanges')) +
+        '</div>';
+      return;
+    }
+
+    // Initialize virtual scroll for both panels
+    initRestoreVirtualScroll($restorePanelLeft, 'left');
+    initRestoreVirtualScroll($restorePanelRight, 'right');
+
+    renderRestoreVisibleRows('left');
+    renderRestoreVisibleRows('right');
+  }
+
+  function initRestoreVirtualScroll(container, side) {
+    container.innerHTML = '';
+
+    var spacer = document.createElement('div');
+    spacer.style.height = restoreRows.length * RESTORE_ROW_HEIGHT + 'px';
+    spacer.style.position = 'relative';
+
+    var table = document.createElement('table');
+    table.className = 'restore-diff-table';
+
+    var colgroup = document.createElement('colgroup');
+    var colGutter = document.createElement('col');
+    colGutter.style.width = '50px';
+    var colCode = document.createElement('col');
+    colgroup.appendChild(colGutter);
+    colgroup.appendChild(colCode);
+    table.appendChild(colgroup);
+
+    var tbody = document.createElement('tbody');
+    table.appendChild(tbody);
+
+    spacer.appendChild(table);
+    container.appendChild(spacer);
+
+    if (side === 'left') {
+      restoreLeftTable = table;
+    } else {
+      restoreRightTable = table;
+    }
+  }
+
+  function scheduleRestoreRender(side) {
+    if (side === 'left') {
+      if (restoreRafLeft) return;
+      restoreRafLeft = requestAnimationFrame(function () {
+        restoreRafLeft = null;
+        renderRestoreVisibleRows('left');
+      });
+    } else {
+      if (restoreRafRight) return;
+      restoreRafRight = requestAnimationFrame(function () {
+        restoreRafRight = null;
+        renderRestoreVisibleRows('right');
+      });
+    }
+  }
+
+  function renderRestoreVisibleRows(side) {
+    var container = side === 'left' ? $restorePanelLeft : $restorePanelRight;
+    var table = side === 'left' ? restoreLeftTable : restoreRightTable;
+    if (!container || !table || restoreRows.length === 0) return;
+
+    var scrollTop = container.scrollTop;
+    var viewHeight = container.clientHeight;
+
+    var startIdx = Math.floor(scrollTop / RESTORE_ROW_HEIGHT) - RESTORE_OVERSCAN;
+    var endIdx = Math.ceil((scrollTop + viewHeight) / RESTORE_ROW_HEIGHT) + RESTORE_OVERSCAN;
+    startIdx = Math.max(0, startIdx);
+    endIdx = Math.min(restoreRows.length, endIdx);
+
+    table.style.top = startIdx * RESTORE_ROW_HEIGHT + 'px';
+
+    var tbody = table.querySelector('tbody');
+    var frag = document.createDocumentFragment();
+
+    for (var i = startIdx; i < endIdx; i++) {
+      var row = restoreRows[i];
+      var tr = document.createElement('tr');
+      tr.style.height = RESTORE_ROW_HEIGHT + 'px';
+
+      if (row.type === 'separator') {
+        tr.className = 'rdiff-separator';
+        var td = document.createElement('td');
+        td.colSpan = 2;
+        td.textContent = row.text;
+        tr.appendChild(td);
+      } else {
+        var isLeft = side === 'left';
+        var lineNum = isLeft ? row.leftNum : row.rightNum;
+        var content = isLeft ? row.leftContent : row.rightContent;
+        var hasContent = content != null;
+
+        // Determine row class
+        if (row.type === 'equal') {
+          tr.className = 'rdiff-line-equal';
+        } else if (row.type === 'delete') {
+          tr.className = isLeft ? 'rdiff-line-delete' : 'rdiff-line-placeholder';
+        } else if (row.type === 'insert') {
+          tr.className = isLeft ? 'rdiff-line-placeholder' : 'rdiff-line-insert';
+        }
+
+        var gutterTd = document.createElement('td');
+        gutterTd.className = 'rdiff-gutter';
+        gutterTd.textContent = lineNum != null ? lineNum : '';
+
+        var codeTd = document.createElement('td');
+        codeTd.className = 'rdiff-code';
+        codeTd.textContent = hasContent ? content : '';
+
+        tr.appendChild(gutterTd);
+        tr.appendChild(codeTd);
+      }
+
+      frag.appendChild(tr);
+    }
+
+    tbody.innerHTML = '';
+    tbody.appendChild(frag);
+  }
+
+  async function executeRestore() {
+    if (!currentFile || !selectedRestoreChecksum) return;
+    $restoreConfirm.disabled = true;
+    $restoreCancel.disabled = true;
+    try {
+      await apiPost('/api/restore', {
+        file: currentFile,
+        checksum: selectedRestoreChecksum,
+      });
+      $status.textContent = t('status.restoreRequested', { file: currentFile });
+      closeRestoreModal();
+      setTimeout(function () {
+        location.reload();
+      }, 200);
+    } catch (e) {
+      $status.textContent = e.message;
+      $restoreConfirm.disabled = false;
+      $restoreCancel.disabled = false;
+    }
+  }
+
+  // Restore modal event listeners
+  $restoreCancel.addEventListener('click', function () {
+    closeRestoreModal();
+  });
+
+  $restoreConfirm.addEventListener('click', function () {
+    executeRestore();
+  });
+
+  $restoreOverlay.addEventListener('click', function (e) {
+    if (e.target === $restoreOverlay) closeRestoreModal();
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && isRestoreOpen()) {
+      e.preventDefault();
+      closeRestoreModal();
+    }
+  });
 
   init();
 })();
