@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TEMPLATE_PROJECTS_PATH="${TEMPLATE_PROJECTS_PATH:-/home/xyz/Documents/XYZRobotics/std_truck_unloading_2.0_05062025_1}"
+# Use a directory with text files to stress-test; no default to avoid leaking paths.
+TEMPLATE_PROJECTS_PATH="${TEMPLATE_PROJECTS_PATH:?TEMPLATE_PROJECTS_PATH must be set to a directory with files for stress test}"
 SLEEP_SECONDS="${SLEEP_SECONDS:-0.2}"
 INDEX_READY_TIMEOUT_SECONDS="${INDEX_READY_TIMEOUT_SECONDS:-10}"
 
