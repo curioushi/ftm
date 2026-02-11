@@ -38,10 +38,16 @@ pub struct Index {
     pub history: Vec<HistoryEntry>,
 }
 
-/// Result of clean_orphan_snapshots: counts of removed files and bytes.
+/// Result of clean (trim + orphan removal): counts for both phases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanResult {
+    /// History entries removed by trim (max_history / max_quota).
+    pub entries_trimmed: usize,
+    /// Bytes freed by trim (snapshots deleted due to trim).
+    pub bytes_freed_trim: u64,
+    /// Orphan snapshot files removed (not referenced by any history).
     pub files_removed: usize,
+    /// Bytes freed by orphan removal.
     pub bytes_removed: u64,
 }
 

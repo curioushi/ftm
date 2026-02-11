@@ -46,6 +46,8 @@ pub struct ScanResult {
 
 #[derive(Deserialize)]
 struct CleanResult {
+    entries_trimmed: usize,
+    bytes_freed_trim: u64,
     files_removed: usize,
     bytes_removed: u64,
 }
@@ -329,11 +331,29 @@ pub fn client_clean(port: u16) -> Result<()> {
         .map_err(handle_connection_error)?;
     let resp = check_response(resp)?;
     let result: CleanResult = resp.json().context("Failed to parse response")?;
-    println!(
-        "Clean complete: {} snapshot(s) removed, {} freed",
-        result.files_removed,
-        format_bytes(result.bytes_removed)
-    );
+    if result.entries_trimmed > 0 || result.bytes_freed_trim > 0 {
+        println!(
+            "Trim: {} history entries trimmed, {} freed",
+            result.entries_trimmed,
+            format_bytes(result.bytes_freed_trim)
+        );
+    }
+    if result.files_removed > 0 || result.bytes_removed > 0 {
+        println!(
+            "Orphan: {} snapshot(s) removed, {} freed",
+            result.files_removed,
+            format_bytes(result.bytes_removed)
+        );
+    }
+    if result.entries_trimmed == 0
+        && result.bytes_freed_trim == 0
+        && result.files_removed == 0
+        && result.bytes_removed == 0
+    {
+        println!("Clean complete: nothing to remove");
+    } else {
+        println!("Clean complete");
+    }
     Ok(())
 }
 

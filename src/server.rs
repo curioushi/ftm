@@ -469,7 +469,7 @@ async fn checkout(
         });
     }
 
-    // Spawn periodic cleaner — runs clean_orphan_snapshots every clean_interval seconds.
+    // Spawn periodic cleaner — runs full clean (trim + orphan removal) every clean_interval seconds.
     {
         let clean_ftm_dir = ftm_dir.clone();
         let clean_config = shared_config.clone();
@@ -501,14 +501,20 @@ async fn checkout(
                 let fd = clean_ftm_dir.clone();
                 match tokio::task::spawn_blocking(move || {
                     let storage = Storage::new(fd, max_history, max_quota);
-                    storage.clean_orphan_snapshots()
+                    storage.clean()
                 })
                 .await
                 {
                     Ok(Ok(r)) => {
+                        if r.entries_trimmed > 0 || r.bytes_freed_trim > 0 {
+                            info!(
+                                "Periodic clean: {} history entries trimmed, {} freed",
+                                r.entries_trimmed, r.bytes_freed_trim
+                            );
+                        }
                         if r.files_removed > 0 || r.bytes_removed > 0 {
                             info!(
-                                "Periodic clean: {} files, {} bytes removed",
+                                "Periodic clean: {} orphan snapshot(s) removed, {} freed",
                                 r.files_removed, r.bytes_removed
                             );
                         }
@@ -712,7 +718,7 @@ async fn scan(State(state): State<SharedState>) -> Result<impl IntoResponse, Api
 
 async fn clean_handler(State(state): State<SharedState>) -> Result<Json<CleanResult>, ApiError> {
     let (storage, _) = state.storage().await.ok_or_else(not_checked_out)?;
-    let result = tokio::task::spawn_blocking(move || storage.clean_orphan_snapshots())
+    let result = tokio::task::spawn_blocking(move || storage.clean())
         .await
         .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;

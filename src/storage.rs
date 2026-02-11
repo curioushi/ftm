@@ -45,6 +45,7 @@ impl IndexView {
         self.last_by_file.insert(file, index);
     }
 
+    #[allow(dead_code)]
     pub(crate) fn rebuild(&mut self, index: &Index) {
         self.last_by_file.clear();
         for (i, entry) in index.history.iter().enumerate() {
@@ -331,20 +332,16 @@ impl Storage {
             index.history.push(entry.clone());
             view.update_last_for_file(entry.file.clone(), index.history.len() - 1);
         }
-        if count > 0 {
-            if self.trim_history_and_quota(index)? {
-                view.rebuild(index);
-            }
-        }
         Ok(count)
     }
 
     /// Trim oldest history entries until both max_history and max_quota are satisfied.
-    /// Removes snapshot files that become unreferenced. Returns true if any entries were removed.
-    pub(crate) fn trim_history_and_quota(&self, index: &mut Index) -> Result<bool> {
+    /// Removes snapshot files that become unreferenced.
+    /// Returns (entries_removed, bytes_freed).
+    pub(crate) fn trim_history_and_quota(&self, index: &mut Index) -> Result<(usize, u64)> {
         let n = index.history.len();
         if n == 0 {
-            return Ok(false);
+            return Ok((0, 0));
         }
 
         let mut checksum_size: HashMap<String, u64> = HashMap::new();
@@ -381,13 +378,21 @@ impl Storage {
         }
 
         if to_remove == 0 {
-            return Ok(false);
+            return Ok((0, 0));
         }
 
         let snapshots_to_delete: HashSet<String> = index.history[..to_remove]
             .iter()
             .filter_map(|e| e.checksum.as_ref().cloned())
             .collect();
+        let mut bytes_freed = 0u64;
+        for c in &snapshots_to_delete {
+            if ref_count.get(c).copied().unwrap_or(0) == 0 {
+                if let Some(&size) = checksum_size.get(c) {
+                    bytes_freed += size;
+                }
+            }
+        }
         index.history.drain(0..to_remove);
 
         for c in &snapshots_to_delete {
@@ -397,7 +402,24 @@ impl Storage {
             }
         }
 
-        Ok(true)
+        Ok((to_remove, bytes_freed))
+    }
+
+    /// Run full clean: trim history/quota then remove orphan snapshots.
+    /// Returns combined stats (trim + orphan).
+    pub fn clean(&self) -> Result<CleanResult> {
+        let mut index = self.load_index()?;
+        let (entries_trimmed, bytes_freed_trim) = self.trim_history_and_quota(&mut index)?;
+        if entries_trimmed > 0 {
+            self.save_index(&index)?;
+        }
+        let (files_removed, bytes_removed) = self.clean_orphan_snapshots_inner()?;
+        Ok(CleanResult {
+            entries_trimmed,
+            bytes_freed_trim,
+            files_removed,
+            bytes_removed,
+        })
     }
 
     /// Read the raw bytes of a snapshot by its full checksum.
@@ -417,8 +439,8 @@ impl Storage {
     }
 
     /// Remove snapshot files that are not referenced by any HistoryEntry in the index.
-    /// Returns counts of files and bytes removed. Skips `.tmp/` under snapshots.
-    pub fn clean_orphan_snapshots(&self) -> Result<CleanResult> {
+    /// Returns (files_removed, bytes_removed). Skips `.tmp/` under snapshots.
+    fn clean_orphan_snapshots_inner(&self) -> Result<(usize, u64)> {
         let index = self.load_index()?;
         let referenced: HashSet<String> = index
             .history
@@ -428,10 +450,7 @@ impl Storage {
 
         let snap_dir = self.snapshots_dir();
         if !snap_dir.exists() {
-            return Ok(CleanResult {
-                files_removed: 0,
-                bytes_removed: 0,
-            });
+            return Ok((0, 0));
         }
 
         let mut files_removed = 0usize;
@@ -445,10 +464,7 @@ impl Storage {
             files_removed += 1;
         }
 
-        Ok(CleanResult {
-            files_removed,
-            bytes_removed,
-        })
+        Ok((files_removed, bytes_removed))
     }
 
     /// Returns true if s is exactly 64 hex chars (SHA-256).

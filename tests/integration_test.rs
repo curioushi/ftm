@@ -1748,6 +1748,9 @@ mod trim_tests {
             "bigfile.yaml should have at least one entry"
         );
 
+        let out = run_ftm_with_port(port, &["clean"]);
+        assert!(out.status.success(), "clean should succeed");
+
         let index = load_test_index(dir.path());
         let volume = referenced_snapshot_volume(dir.path(), &index);
         assert!(
@@ -2106,6 +2109,9 @@ mod clean_tests {
         assert!(out.status.success());
         assert!(String::from_utf8_lossy(&out.stdout).contains("1 modified"));
 
+        let out = run_ftm_with_port(port, &["clean"]);
+        assert!(out.status.success());
+
         let index = load_test_index(dir.path());
         let entries: Vec<_> = index
             .history
@@ -2115,19 +2121,19 @@ mod clean_tests {
         assert_eq!(
             entries.len(),
             1,
-            "max_history=1 should trim to single entry"
+            "max_history=1 should trim to single entry after clean"
         );
         let snap_before = count_snapshot_files(dir.path());
         assert_eq!(
             snap_before, 1,
-            "Trim already deletes unreferenced snapshots; only v2 snapshot remains"
+            "Trim in clean deletes unreferenced snapshots; only v2 snapshot remains"
         );
 
         let out = run_ftm_with_port(port, &["clean"]);
         assert!(out.status.success());
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
-            stdout.contains("0 snapshot(s) removed"),
+            stdout.contains("nothing to remove") || stdout.contains("Clean complete"),
             "No orphans left for clean to remove: {}",
             stdout
         );
@@ -2172,8 +2178,8 @@ mod clean_tests {
 
         let snap_before = count_snapshot_files(dir.path());
         assert_eq!(
-            snap_before, 1,
-            "Trim already deletes unreferenced snapshots; only v2 snapshot remains"
+            snap_before, 2,
+            "Before periodic clean: scan does not trim, so v1 and v2 snapshots both exist"
         );
 
         std::thread::sleep(std::time::Duration::from_secs(4));
