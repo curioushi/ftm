@@ -142,9 +142,9 @@ impl Config {
 
     /// Returns true if path_str or (if provided) dir_str matches any compiled exclude pattern.
     pub(crate) fn excluded_by_patterns(&self, path_str: &str, dir_str: Option<&str>) -> bool {
-        self.exclude_compiled.iter().any(|p| {
-            p.matches(path_str) || dir_str.is_some_and(|d| p.matches(d))
-        })
+        self.exclude_compiled
+            .iter()
+            .any(|p| p.matches(path_str) || dir_str.is_some_and(|d| p.matches(d)))
     }
 
     /// Get a config value by dot-notation key (e.g. "settings.max_history").

@@ -200,6 +200,67 @@ fn kill_process(pid: u32) {
     }
 }
 
+const DEFAULT_TEST_MAX_FILE_SIZE: u64 = 30 * 1024 * 1024;
+
+/// Builder for pre-initializing .ftm in a directory. Use defaults so call sites only set what they need.
+struct PreInitFtm {
+    dir: std::path::PathBuf,
+    max_history: usize,
+    max_file_size: u64,
+    scan_interval: Option<u64>,
+    clean_interval: Option<u64>,
+    max_quota: Option<u64>,
+}
+
+impl PreInitFtm {
+    fn new(dir: &Path) -> Self {
+        Self {
+            dir: dir.to_path_buf(),
+            max_history: 100,
+            max_file_size: DEFAULT_TEST_MAX_FILE_SIZE,
+            scan_interval: None,
+            clean_interval: None,
+            max_quota: None,
+        }
+    }
+
+    fn max_history(mut self, v: usize) -> Self {
+        self.max_history = v;
+        self
+    }
+
+    fn max_file_size(mut self, v: u64) -> Self {
+        self.max_file_size = v;
+        self
+    }
+
+    fn scan_interval(mut self, v: u64) -> Self {
+        self.scan_interval = Some(v);
+        self
+    }
+
+    fn clean_interval(mut self, v: u64) -> Self {
+        self.clean_interval = Some(v);
+        self
+    }
+
+    fn max_quota(mut self, v: u64) -> Self {
+        self.max_quota = Some(v);
+        self
+    }
+
+    fn init(self) {
+        pre_init_ftm(
+            &self.dir,
+            self.max_history,
+            self.max_file_size,
+            self.scan_interval,
+            self.clean_interval,
+            self.max_quota,
+        );
+    }
+}
+
 /// Pre-initialize .ftm in a directory with custom settings.
 /// Optional scan_interval, clean_interval, and max_quota use server defaults when None.
 fn pre_init_ftm(
@@ -1649,7 +1710,7 @@ mod trim_tests {
         let dir = setup_test_dir();
 
         // Pre-init .ftm with max_history=3
-        pre_init_ftm(dir.path(), 3, 30 * 1024 * 1024, None, None, None);
+        PreInitFtm::new(dir.path()).max_history(3).init();
 
         let (mut server, _port) = start_server_and_checkout(dir.path());
         let file_path = dir.path().join("trimme.yaml");
@@ -1709,14 +1770,10 @@ mod trim_tests {
     fn test_max_quota_trims_by_volume() {
         let dir = setup_test_dir();
         let max_quota = 150 * 1024; // 150KB
-        pre_init_ftm(
-            dir.path(),
-            1000,
-            30 * 1024 * 1024,
-            None,
-            None,
-            Some(max_quota),
-        );
+        PreInitFtm::new(dir.path())
+            .max_history(1000)
+            .max_quota(max_quota)
+            .init();
 
         let (mut server, port) = start_server_and_checkout(dir.path());
         let file_path = dir.path().join("bigfile.yaml");
@@ -1938,7 +1995,7 @@ mod scan_tests {
         let dir = setup_test_dir();
 
         // Pre-init .ftm with max_file_size=100
-        pre_init_ftm(dir.path(), 100, 100, None, None, None);
+        PreInitFtm::new(dir.path()).max_file_size(100).init();
 
         // Create files BEFORE checkout
         std::fs::write(dir.path().join("small.txt"), "tiny").unwrap();
@@ -2082,7 +2139,7 @@ mod clean_tests {
     #[test]
     fn test_clean_removes_orphan_snapshots() {
         let dir = setup_test_dir();
-        pre_init_ftm(dir.path(), 1, 30 * 1024 * 1024, None, None, None);
+        PreInitFtm::new(dir.path()).max_history(1).init();
 
         std::fs::write(dir.path().join("clean_orphan.yaml"), "v1").unwrap();
 
@@ -2152,7 +2209,10 @@ mod clean_tests {
     #[test]
     fn test_periodic_clean_removes_orphans_after_interval() {
         let dir = setup_test_dir();
-        pre_init_ftm(dir.path(), 1, 30 * 1024 * 1024, None, Some(2), None);
+        PreInitFtm::new(dir.path())
+            .max_history(1)
+            .clean_interval(2)
+            .init();
 
         std::fs::write(dir.path().join("periodic_clean.yaml"), "v1").unwrap();
 
@@ -2463,7 +2523,7 @@ mod config_hot_reload_tests {
         .unwrap();
 
         // Pre-init with 8s interval; no scan in 1s
-        pre_init_ftm(dir.path(), 100, 30 * 1024 * 1024, Some(8), None, None);
+        PreInitFtm::new(dir.path()).scan_interval(8).init();
 
         let (mut server, port) = start_server_and_checkout(dir.path());
 
@@ -2496,7 +2556,7 @@ mod config_hot_reload_tests {
         std::fs::write(dir.path().join("medium.txt"), "x".repeat(200)).unwrap();
 
         // Pre-init with max_file_size=100 — file will be skipped
-        pre_init_ftm(dir.path(), 100, 100, None, None, None);
+        PreInitFtm::new(dir.path()).max_file_size(100).init();
 
         let (mut server, port) = start_server_and_checkout(dir.path());
 
@@ -2754,7 +2814,7 @@ mod periodic_scan_tests {
         .unwrap();
 
         // Pre-init with 2s scan interval (minimum)
-        pre_init_ftm(dir.path(), 100, 30 * 1024 * 1024, Some(2), None, None);
+        PreInitFtm::new(dir.path()).scan_interval(2).init();
 
         let (mut server, _port) = start_server_and_checkout(dir.path());
 
@@ -2788,7 +2848,7 @@ mod periodic_scan_tests {
         std::fs::write(dir.path().join("should_not_scan.txt"), "no scan").unwrap();
 
         // Pre-init with 5s interval so no scan runs within 2s
-        pre_init_ftm(dir.path(), 100, 30 * 1024 * 1024, Some(5), None, None);
+        PreInitFtm::new(dir.path()).scan_interval(5).init();
 
         let (mut server, _port) = start_server_and_checkout(dir.path());
 
