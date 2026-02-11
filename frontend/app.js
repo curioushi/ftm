@@ -63,6 +63,21 @@
     red: '#ef4444',
   };
 
+  function findEntryIndex(entries, timestamp, checksum) {
+    for (let i = 0; i < entries.length; i++) {
+      if (entries[i].timestamp === timestamp && entries[i].checksum === checksum) return i;
+    }
+    return -1;
+  }
+
+  function shouldShowOnTimeline() {
+    return (
+      !hideDeletedFiles ||
+      historyEntries.length === 0 ||
+      historyEntries[historyEntries.length - 1].op !== 'delete'
+    );
+  }
+
   function opColor(op) {
     if (op === 'create') return COLORS.green;
     if (op === 'modify') return COLORS.blue;
@@ -489,52 +504,50 @@
     window.addEventListener('resize', positionTreeDepthThumb);
   }
 
-  // ---- Sidebar resize -------------------------------------------------------
-  function initSidebarResize() {
-    const STORAGE_KEY = 'ftm-sidebar-width';
-    const MIN_WIDTH = 120;
-    const MAX_WIDTH_RATIO = 0.5;
-
-    // Restore saved width
-    const saved = localStorage.getItem(STORAGE_KEY);
+  // ---- Drag resize helper ---------------------------------------------------
+  function initDragResize(opts) {
+    const saved = localStorage.getItem(opts.storageKey);
     if (saved) {
-      const w = parseInt(saved, 10);
-      if (w >= MIN_WIDTH) {
-        $sidebar.style.width = w + 'px';
+      const v = parseInt(saved, 10);
+      if (v >= opts.minSize) {
+        opts.target.style[opts.sizeProp] = v + 'px';
       }
     }
 
-    let startX = 0;
-    let startWidth = 0;
+    let startPos = 0;
+    let startSize = 0;
 
     function onMouseDown(e) {
       e.preventDefault();
-      startX = e.clientX;
-      startWidth = $sidebar.getBoundingClientRect().width;
-      $resizeHandle.classList.add('dragging');
-      document.body.classList.add('resizing');
+      startPos = opts.axis === 'x' ? e.clientX : e.clientY;
+      startSize = opts.target.getBoundingClientRect()[opts.sizeProp];
+      opts.handle.classList.add('dragging');
+      document.body.classList.add(opts.bodyClass);
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
     }
 
     function onMouseMove(e) {
-      const maxW = window.innerWidth * MAX_WIDTH_RATIO;
-      let newWidth = startWidth + (e.clientX - startX);
-      newWidth = Math.max(MIN_WIDTH, Math.min(maxW, newWidth));
-      $sidebar.style.width = newWidth + 'px';
+      const currentPos = opts.axis === 'x' ? e.clientX : e.clientY;
+      let delta = currentPos - startPos;
+      if (opts.invert) delta = -delta;
+      const maxSize = opts.getMaxSize();
+      const newSize = Math.max(opts.minSize, Math.min(maxSize, startSize + delta));
+      opts.target.style[opts.sizeProp] = newSize + 'px';
+      if (opts.onResize) opts.onResize();
     }
 
     function onMouseUp() {
-      $resizeHandle.classList.remove('dragging');
-      document.body.classList.remove('resizing');
+      opts.handle.classList.remove('dragging');
+      document.body.classList.remove(opts.bodyClass);
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
-      // Persist
-      const w = Math.round($sidebar.getBoundingClientRect().width);
-      localStorage.setItem(STORAGE_KEY, String(w));
+      const finalSize = Math.round(opts.target.getBoundingClientRect()[opts.sizeProp]);
+      localStorage.setItem(opts.storageKey, String(finalSize));
+      if (opts.onResize) opts.onResize();
     }
 
-    $resizeHandle.addEventListener('mousedown', onMouseDown);
+    opts.handle.addEventListener('mousedown', onMouseDown);
   }
 
   async function selectFile(path) {
@@ -555,11 +568,7 @@
     try {
       historyEntries = await apiJson('/api/history?file=' + encodeURIComponent(path));
       tlMode = 'single';
-      const showOnTimeline =
-        !hideDeletedFiles ||
-        historyEntries.length === 0 ||
-        historyEntries[historyEntries.length - 1].op !== 'delete';
-      setTimelineSingleFile(path, showOnTimeline ? historyEntries : []);
+      setTimelineSingleFile(path, shouldShowOnTimeline() ? historyEntries : []);
       // Auto-select latest entry
       if (historyEntries.length > 0) {
         selectEntry(historyEntries.length - 1);
@@ -1387,36 +1396,13 @@
       updateLaneLabels();
       $diffTitle.textContent = lane.file;
 
-      // Load the full history for this file to enable diff viewing
       apiJson('/api/history?file=' + encodeURIComponent(lane.file)).then((entries) => {
         historyEntries = entries;
-        // Find the matching entry index
-        const clickedEntry = node.entry;
-        let matchIdx = entries.length - 1;
-        for (let i = 0; i < entries.length; i++) {
-          if (
-            entries[i].timestamp === clickedEntry.timestamp &&
-            entries[i].checksum === clickedEntry.checksum
-          ) {
-            matchIdx = i;
-            break;
-          }
-        }
-        selectEntryDiff(matchIdx);
+        const idx = findEntryIndex(entries, node.entry.timestamp, node.entry.checksum);
+        selectEntryDiff(idx >= 0 ? idx : entries.length - 1);
       });
     } else {
-      // Single-file mode or same file - just select the entry
-      const clickedEntry = node.entry;
-      let matchIdx = -1;
-      for (let i = 0; i < historyEntries.length; i++) {
-        if (
-          historyEntries[i].timestamp === clickedEntry.timestamp &&
-          historyEntries[i].checksum === clickedEntry.checksum
-        ) {
-          matchIdx = i;
-          break;
-        }
-      }
+      const matchIdx = findEntryIndex(historyEntries, node.entry.timestamp, node.entry.checksum);
       if (matchIdx >= 0) {
         selectEntryDiff(matchIdx);
       }
@@ -1544,29 +1530,17 @@
     }
   }
 
-  /** Find the lane index and lane-local entry index for the current file's history entry */
   function matchActiveNodeForEntry(entry) {
     if (!entry || tlLanes.length === 0) return null;
     if (tlMode === 'single') {
-      // In single mode, lane 0 maps directly to historyEntries index
-      for (let ei = 0; ei < tlLanes[0].entries.length; ei++) {
-        const le = tlLanes[0].entries[ei];
-        if (le.timestamp === entry.timestamp && le.checksum === entry.checksum) {
-          return { laneIdx: 0, entryIdx: ei, entry: le };
-        }
-      }
+      const ei = findEntryIndex(tlLanes[0].entries, entry.timestamp, entry.checksum);
+      if (ei >= 0) return { laneIdx: 0, entryIdx: ei, entry: tlLanes[0].entries[ei] };
       return null;
     }
-    // Multi-file mode: find the lane for currentFile
     for (let li = 0; li < tlLanes.length; li++) {
       if (tlLanes[li].file !== currentFile) continue;
-      const lane = tlLanes[li];
-      for (let ei = 0; ei < lane.entries.length; ei++) {
-        const le = lane.entries[ei];
-        if (le.timestamp === entry.timestamp && le.checksum === entry.checksum) {
-          return { laneIdx: li, entryIdx: ei, entry: le };
-        }
-      }
+      const ei = findEntryIndex(tlLanes[li].entries, entry.timestamp, entry.checksum);
+      if (ei >= 0) return { laneIdx: li, entryIdx: ei, entry: tlLanes[li].entries[ei] };
       break;
     }
     return null;
@@ -1615,11 +1589,7 @@
       clearActiveRangeBtn();
       if (currentFile) {
         tlMode = 'single';
-        const showOnTimeline =
-          !hideDeletedFiles ||
-          historyEntries.length === 0 ||
-          historyEntries[historyEntries.length - 1].op !== 'delete';
-        setTimelineSingleFile(currentFile, showOnTimeline ? historyEntries : []);
+        setTimelineSingleFile(currentFile, shouldShowOnTimeline() ? historyEntries : []);
       }
       return;
     }
@@ -1686,16 +1656,8 @@
           const lastEntry = lane.entries[lane.entries.length - 1];
           apiJson('/api/history?file=' + encodeURIComponent(currentFile)).then((hist) => {
             historyEntries = hist;
-            let matchIdx = historyEntries.length - 1;
-            for (let i = 0; i < historyEntries.length; i++) {
-              if (
-                historyEntries[i].timestamp === lastEntry.timestamp &&
-                historyEntries[i].checksum === lastEntry.checksum
-              ) {
-                matchIdx = i;
-                break;
-              }
-            }
+            const idx = findEntryIndex(hist, lastEntry.timestamp, lastEntry.checksum);
+            const matchIdx = idx >= 0 ? idx : hist.length - 1;
             tlActiveNode = {
               laneIdx: 0,
               entryIdx: lane.entries.length - 1,
@@ -1712,104 +1674,6 @@
     } catch (e) {
       $status.textContent = t('status.activityFailed', { msg: e.message });
     }
-  }
-
-  // ---- Timeline vertical resize ---------------------------------------------
-  function initTimelineResize() {
-    const MIN_HEIGHT = 60;
-    const MAX_HEIGHT_RATIO = 0.5;
-
-    // Restore saved height
-    const saved = localStorage.getItem(TL_HEIGHT_STORAGE_KEY);
-    if (saved) {
-      const h = parseInt(saved, 10);
-      if (h >= MIN_HEIGHT) {
-        $timelineBar.style.height = h + 'px';
-      }
-    }
-
-    let startY = 0;
-    let startHeight = 0;
-
-    function onMouseDown(e) {
-      e.preventDefault();
-      startY = e.clientY;
-      startHeight = $timelineBar.getBoundingClientRect().height;
-      $tlResizeHandle.classList.add('dragging');
-      document.body.classList.add('tl-resizing');
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
-    }
-
-    function onMouseMove(e) {
-      const maxH = window.innerHeight * MAX_HEIGHT_RATIO;
-      // Dragging up increases height (resize handle is above timeline)
-      let newHeight = startHeight - (e.clientY - startY);
-      newHeight = Math.max(MIN_HEIGHT, Math.min(maxH, newHeight));
-      $timelineBar.style.height = newHeight + 'px';
-      requestTimelineDraw();
-    }
-
-    function onMouseUp() {
-      $tlResizeHandle.classList.remove('dragging');
-      document.body.classList.remove('tl-resizing');
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      // Persist
-      const h = Math.round($timelineBar.getBoundingClientRect().height);
-      localStorage.setItem(TL_HEIGHT_STORAGE_KEY, String(h));
-      requestTimelineDraw();
-    }
-
-    $tlResizeHandle.addEventListener('mousedown', onMouseDown);
-  }
-
-  // ---- Timeline lanes resize -------------------------------------------------
-  function initTimelineLanesResize() {
-    const MIN_WIDTH = 60;
-    const MAX_WIDTH_RATIO = 0.4;
-
-    // Restore saved width
-    const saved = localStorage.getItem(TL_LANES_WIDTH_STORAGE_KEY);
-    if (saved) {
-      const w = parseInt(saved, 10);
-      if (w >= MIN_WIDTH) {
-        $timelineLanes.style.width = w + 'px';
-      }
-    }
-
-    let startX = 0;
-    let startWidth = 0;
-
-    function onMouseDown(e) {
-      e.preventDefault();
-      startX = e.clientX;
-      startWidth = $timelineLanes.getBoundingClientRect().width;
-      $tlLanesResize.classList.add('dragging');
-      document.body.classList.add('tl-lanes-resizing');
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
-    }
-
-    function onMouseMove(e) {
-      const maxW = $timelineBody.getBoundingClientRect().width * MAX_WIDTH_RATIO;
-      let newWidth = startWidth + (e.clientX - startX);
-      newWidth = Math.max(MIN_WIDTH, Math.min(maxW, newWidth));
-      $timelineLanes.style.width = newWidth + 'px';
-      requestTimelineDraw();
-    }
-
-    function onMouseUp() {
-      $tlLanesResize.classList.remove('dragging');
-      document.body.classList.remove('tl-lanes-resizing');
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      const w = Math.round($timelineLanes.getBoundingClientRect().width);
-      localStorage.setItem(TL_LANES_WIDTH_STORAGE_KEY, String(w));
-      requestTimelineDraw();
-    }
-
-    $tlLanesResize.addEventListener('mousedown', onMouseDown);
   }
 
   // ---- Initialize timeline event listeners ----------------------------------
@@ -1847,8 +1711,33 @@
     });
 
     initRangeButtons();
-    initTimelineResize();
-    initTimelineLanesResize();
+    initDragResize({
+      handle: $tlResizeHandle,
+      target: $timelineBar,
+      storageKey: TL_HEIGHT_STORAGE_KEY,
+      axis: 'y',
+      sizeProp: 'height',
+      minSize: 60,
+      invert: true,
+      getMaxSize: function () {
+        return window.innerHeight * 0.5;
+      },
+      bodyClass: 'tl-resizing',
+      onResize: requestTimelineDraw,
+    });
+    initDragResize({
+      handle: $tlLanesResize,
+      target: $timelineLanes,
+      storageKey: TL_LANES_WIDTH_STORAGE_KEY,
+      axis: 'x',
+      sizeProp: 'width',
+      minSize: 60,
+      getMaxSize: function () {
+        return $timelineBody.getBoundingClientRect().width * 0.4;
+      },
+      bodyClass: 'tl-lanes-resizing',
+      onResize: requestTimelineDraw,
+    });
   }
 
   // ---- Diff renderer -------------------------------------------------------
@@ -1887,8 +1776,8 @@
           skippedNew = hunk.new_start - 1;
         } else {
           const prev = diff.hunks[hi - 1];
-          const prevEndOld = prevHunkEndOld(prev);
-          const prevEndNew = prevHunkEndNew(prev);
+          const prevEndOld = hunkEndLine(prev, 'old');
+          const prevEndNew = hunkEndLine(prev, 'new');
           skippedOld = hunk.old_start - prevEndOld;
           skippedNew = hunk.new_start - prevEndNew;
           oldFrom = prevEndOld;
@@ -1933,8 +1822,8 @@
 
     // Trailing separator
     const lastHunk = diff.hunks[diff.hunks.length - 1];
-    const lastEndOld = prevHunkEndOld(lastHunk);
-    const lastEndNew = prevHunkEndNew(lastHunk);
+    const lastEndOld = hunkEndLine(lastHunk, 'old');
+    const lastEndNew = hunkEndLine(lastHunk, 'new');
     if (lastEndOld <= diff.old_total || lastEndNew <= diff.new_total) {
       const remaining = Math.max(diff.old_total - lastEndOld + 1, diff.new_total - lastEndNew + 1);
       if (remaining > 0) {
@@ -1952,18 +1841,11 @@
     initVirtualScroll();
   }
 
-  function prevHunkEndOld(hunk) {
-    let line = hunk.old_start;
+  function hunkEndLine(hunk, side) {
+    let line = side === 'old' ? hunk.old_start : hunk.new_start;
+    const incTag = side === 'old' ? 'delete' : 'insert';
     for (const l of hunk.lines) {
-      if (l.tag === 'equal' || l.tag === 'delete') line++;
-    }
-    return line;
-  }
-
-  function prevHunkEndNew(hunk) {
-    let line = hunk.new_start;
-    for (const l of hunk.lines) {
-      if (l.tag === 'equal' || l.tag === 'insert') line++;
+      if (l.tag === 'equal' || l.tag === incTag) line++;
     }
     return line;
   }
@@ -2242,11 +2124,7 @@
       }
     } else if (currentFile) {
       tlMode = 'single';
-      const showOnTimeline =
-        !hideDeletedFiles ||
-        historyEntries.length === 0 ||
-        historyEntries[historyEntries.length - 1].op !== 'delete';
-      setTimelineSingleFile(currentFile, showOnTimeline ? historyEntries : []);
+      setTimelineSingleFile(currentFile, shouldShowOnTimeline() ? historyEntries : []);
     }
   }
 
@@ -2382,38 +2260,19 @@
     if (isMouseOverTimeline && tlLanes.length > 0) {
       const key = e.key.toLowerCase();
       const span = tlViewEnd - tlViewStart;
-      if (key === 'a') {
+      if (key === 'a' || key === 'd') {
         e.preventDefault();
-        const step = span * 0.075;
-        tlViewStart -= step;
-        tlViewEnd -= step;
-        updateTimelineLabel();
-        requestTimelineDraw();
-        return;
-      }
-      if (key === 'd') {
-        e.preventDefault();
-        const step = span * 0.075;
+        const step = span * 0.075 * (key === 'a' ? -1 : 1);
         tlViewStart += step;
         tlViewEnd += step;
         updateTimelineLabel();
         requestTimelineDraw();
         return;
       }
-      if (key === 'w') {
+      if (key === 'w' || key === 's') {
         e.preventDefault();
         const center = (tlViewStart + tlViewEnd) / 2;
-        const newSpan = span / 1.2;
-        tlViewStart = center - newSpan / 2;
-        tlViewEnd = center + newSpan / 2;
-        updateTimelineLabel();
-        requestTimelineDraw();
-        return;
-      }
-      if (key === 's') {
-        e.preventDefault();
-        const center = (tlViewStart + tlViewEnd) / 2;
-        const newSpan = span * 1.2;
+        const newSpan = span * (key === 'w' ? 1 / 1.2 : 1.2);
         tlViewStart = center - newSpan / 2;
         tlViewEnd = center + newSpan / 2;
         updateTimelineLabel();
@@ -2559,7 +2418,18 @@
 
     hideDeletedFiles = !$showDeleted.checked;
     ensureFirstVisitLayoutDefaults();
-    initSidebarResize();
+    initDragResize({
+      handle: $resizeHandle,
+      target: $sidebar,
+      storageKey: 'ftm-sidebar-width',
+      axis: 'x',
+      sizeProp: 'width',
+      minSize: 120,
+      getMaxSize: function () {
+        return window.innerWidth * 0.5;
+      },
+      bodyClass: 'resizing',
+    });
     initTimeline();
     initTreeDepthButtons();
 
@@ -2729,8 +2599,8 @@
           skipped = Math.max(hunk.old_start - 1, hunk.new_start - 1);
         } else {
           var prev = diff.hunks[hi - 1];
-          var prevEndOld = restoreHunkEndLine(prev, 'old');
-          var prevEndNew = restoreHunkEndLine(prev, 'new');
+          var prevEndOld = hunkEndLine(prev, 'old');
+          var prevEndNew = hunkEndLine(prev, 'new');
           skipped = Math.max(hunk.old_start - prevEndOld, hunk.new_start - prevEndNew);
         }
         if (skipped > 0) {
@@ -2777,12 +2647,9 @@
     // Trailing separator
     if (diff.hunks.length > 0) {
       var lastHunk = diff.hunks[diff.hunks.length - 1];
-      var lastEndOld = restoreHunkEndLine(lastHunk, 'old');
-      var lastEndNew = restoreHunkEndLine(lastHunk, 'new');
-      var remaining = Math.max(
-        diff.old_total - lastEndOld + 1,
-        diff.new_total - lastEndNew + 1
-      );
+      var lastEndOld = hunkEndLine(lastHunk, 'old');
+      var lastEndNew = hunkEndLine(lastHunk, 'new');
+      var remaining = Math.max(diff.old_total - lastEndOld + 1, diff.new_total - lastEndNew + 1);
       if (remaining > 0) {
         rows.push({
           type: 'separator',
@@ -2792,16 +2659,6 @@
     }
 
     return rows;
-  }
-
-  function restoreHunkEndLine(hunk, side) {
-    var line = side === 'old' ? hunk.old_start : hunk.new_start;
-    for (var i = 0; i < hunk.lines.length; i++) {
-      var tag = hunk.lines[i].tag;
-      if (side === 'old' && (tag === 'equal' || tag === 'delete')) line++;
-      if (side === 'new' && (tag === 'equal' || tag === 'insert')) line++;
-    }
-    return line;
   }
 
   function renderRestorePreview(diff) {
@@ -2842,13 +2699,9 @@
 
     if (restoreRows.length === 0) {
       $restorePanelLeft.innerHTML =
-        '<div class="restore-no-changes">' +
-        escapeHtml(t('restore.noChanges')) +
-        '</div>';
+        '<div class="restore-no-changes">' + escapeHtml(t('restore.noChanges')) + '</div>';
       $restorePanelRight.innerHTML =
-        '<div class="restore-no-changes">' +
-        escapeHtml(t('restore.noChanges')) +
-        '</div>';
+        '<div class="restore-no-changes">' + escapeHtml(t('restore.noChanges')) + '</div>';
       return;
     }
 

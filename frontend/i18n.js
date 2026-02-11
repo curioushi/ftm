@@ -257,40 +257,29 @@ var I18N = (function () {
    * Walk the DOM and update elements that have data-i18n-* attributes.
    */
   function applyI18n() {
-    // data-i18n => textContent
-    var els = document.querySelectorAll('[data-i18n]');
-    for (var i = 0; i < els.length; i++) {
-      els[i].textContent = t(els[i].getAttribute('data-i18n'));
+    var propMap = [
+      ['data-i18n', 'textContent'],
+      ['data-i18n-html', 'innerHTML'],
+      ['data-i18n-title', 'title'],
+      ['data-i18n-placeholder', 'placeholder'],
+    ];
+    for (var a = 0; a < propMap.length; a++) {
+      var attr = propMap[a][0];
+      var prop = propMap[a][1];
+      var els = document.querySelectorAll('[' + attr + ']');
+      for (var i = 0; i < els.length; i++) {
+        els[i][prop] = t(els[i].getAttribute(attr));
+      }
     }
 
-    // data-i18n-html => innerHTML (for content with HTML tags)
-    els = document.querySelectorAll('[data-i18n-html]');
-    for (var j = 0; j < els.length; j++) {
-      els[j].innerHTML = t(els[j].getAttribute('data-i18n-html'));
+    // aria-label requires setAttribute instead of direct property assignment
+    var ariaEls = document.querySelectorAll('[data-i18n-aria-label]');
+    for (var j = 0; j < ariaEls.length; j++) {
+      ariaEls[j].setAttribute('aria-label', t(ariaEls[j].getAttribute('data-i18n-aria-label')));
     }
 
-    // data-i18n-title => title attribute
-    els = document.querySelectorAll('[data-i18n-title]');
-    for (var k = 0; k < els.length; k++) {
-      els[k].title = t(els[k].getAttribute('data-i18n-title'));
-    }
-
-    // data-i18n-placeholder => placeholder attribute
-    els = document.querySelectorAll('[data-i18n-placeholder]');
-    for (var l = 0; l < els.length; l++) {
-      els[l].placeholder = t(els[l].getAttribute('data-i18n-placeholder'));
-    }
-
-    // data-i18n-aria-label => aria-label attribute
-    els = document.querySelectorAll('[data-i18n-aria-label]');
-    for (var m = 0; m < els.length; m++) {
-      els[m].setAttribute('aria-label', t(els[m].getAttribute('data-i18n-aria-label')));
-    }
-
-    // Update page title
     document.title = t('app.title');
 
-    // Update language selector if present
     var langSelect = document.getElementById('lang-select');
     if (langSelect) {
       langSelect.value = currentLang;

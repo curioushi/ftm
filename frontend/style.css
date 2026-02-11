@@ -261,6 +261,7 @@ input[type='text']:focus {
   color: var(--fg-dim);
 }
 
+.restore-close-hint kbd,
 .help-modal .help-shortcuts kbd {
   font-family: var(--mono);
   font-size: 11px;
@@ -501,6 +502,21 @@ input[type='text']:focus {
   color: transparent;
 }
 
+.diff-separator td {
+  padding: 0 12px;
+  text-align: center;
+  color: var(--fg-dim);
+  font-size: 11px;
+  cursor: pointer;
+  line-height: 20px;
+  height: 20px;
+}
+
+.diff-separator td:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
 .restore-diff-table .rdiff-separator td {
   padding: 0 12px;
   text-align: center;
@@ -528,15 +544,6 @@ input[type='text']:focus {
   font-size: 11px;
   color: var(--fg-dim);
   margin: 0;
-}
-
-.restore-close-hint kbd {
-  font-family: var(--mono);
-  font-size: 11px;
-  padding: 2px 5px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 2px;
 }
 
 .restore-footer-buttons {
@@ -581,16 +588,7 @@ input[type='text']:focus {
   cursor: not-allowed;
 }
 
-.restore-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--fg-dim);
-  font-size: 13px;
-  font-family: var(--sans);
-}
-
+.restore-loading,
 .restore-no-changes {
   display: flex;
   align-items: center;
@@ -638,14 +636,7 @@ input[type='text']:focus {
   flex-shrink: 0;
 }
 
-.tl-lane-spacer .filter-wrap {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  position: relative;
-}
-
+.tl-lane-spacer .filter-wrap,
 #sidebar-header .filter-wrap {
   flex: 1;
   min-width: 0;
@@ -1038,21 +1029,6 @@ body.resizing * {
   box-shadow:
     0 -1px 0 var(--border),
     0 1px 0 var(--border);
-}
-
-.diff-separator td {
-  padding: 0 12px;
-  text-align: center;
-  color: var(--fg-dim);
-  font-size: 11px;
-  cursor: pointer;
-  line-height: 20px;
-  height: 20px;
-}
-
-.diff-separator td:hover {
-  color: var(--fg);
-  text-decoration: underline;
 }
 
 /* -- Timeline vertical resize handle: 0 visual height, keep hit area -- */
